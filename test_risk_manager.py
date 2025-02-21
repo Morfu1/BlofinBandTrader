@@ -76,20 +76,18 @@ class TestRiskManager(unittest.TestCase):
     def test_take_profit_calculation(self):
         """Test take profit calculation and rounding"""
         entry_price = 0.002911
-
-        # First calculate stop loss values
         sl_long = 0.002890  # Use predefined values for testing
         sl_short = 0.002940
 
         # Test long position
         tp_long = self.risk_manager.calculate_take_profit(entry_price, sl_long, "long")
-        risk_distance = abs(entry_price - sl_long)
-        self.assertEqual(tp_long, float(self.risk_manager.round_to_tick(entry_price + (2 * risk_distance))))
+        expected_tp_long = float(self.risk_manager.round_to_tick(entry_price * 1.02))  # 2% above entry
+        self.assertEqual(tp_long, expected_tp_long)
 
         # Test short position
         tp_short = self.risk_manager.calculate_take_profit(entry_price, sl_short, "short")
-        risk_distance = abs(entry_price - sl_short)
-        self.assertEqual(tp_short, float(self.risk_manager.round_to_tick(entry_price - (2 * risk_distance))))
+        expected_tp_short = float(self.risk_manager.round_to_tick(entry_price * 0.98))  # 2% below entry
+        self.assertEqual(tp_short, expected_tp_short)
 
 if __name__ == '__main__':
     unittest.main()

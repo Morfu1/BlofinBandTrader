@@ -177,20 +177,17 @@ class RiskManager:
             raise
 
     def calculate_take_profit(self, entry_price: float, stop_loss: float, position_type: str) -> float:
-        """Calculate take profit based on stop loss distance and risk:reward ratio"""
+        """Calculate take profit based on configured percentage from entry price"""
         try:
             # Convert inputs to Decimal for precise calculation
             entry_price_decimal = Decimal(str(entry_price))
-            stop_loss_decimal = Decimal(str(stop_loss))
-
-            # Calculate risk (distance to stop loss)
-            risk_distance = abs(entry_price_decimal - stop_loss_decimal)
+            tp_percentage = Decimal(str(self.config.TAKE_PROFIT_PERCENT)) / Decimal('100')  # Convert from percentage to decimal
 
             # Calculate raw take profit price with exact precision
             if position_type == "long":
-                tp_price = entry_price_decimal + (risk_distance * Decimal('2.0'))
+                tp_price = entry_price_decimal * (Decimal('1.0') + tp_percentage)
             else:  # short
-                tp_price = entry_price_decimal - (risk_distance * Decimal('2.0'))
+                tp_price = entry_price_decimal * (Decimal('1.0') - tp_percentage)
 
             # Round to valid tick size using our helper method
             rounded_tp = self.round_to_tick(float(tp_price))
@@ -202,11 +199,10 @@ class RiskManager:
                 f"\nTake Profit Calculation:\n"
                 f"========================================\n"
                 f"Entry Price: ${float(entry_price_decimal):.6f}\n"
-                f"Stop Loss: ${float(stop_loss_decimal):.6f}\n"
-                f"Risk Distance: ${float(risk_distance):.6f}\n"
+                f"Position Type: {position_type}\n"
+                f"Target TP %: {float(tp_percentage) * 100:.2f}%\n"
                 f"Raw TP Price: ${float(tp_price):.6f}\n"
-                f"Risk/Reward: 1:2.0\n"
-                f"Reward Percentage: {reward_percentage:.2f}%\n"
+                f"Actual Reward %: {reward_percentage:.2f}%\n"
                 f"Rounded TP Price: ${float(rounded_tp)}\n"
                 f"========================================")
 
@@ -215,11 +211,14 @@ class RiskManager:
             self.logger.error(f"Error calculating take profit: {str(e)}")
             raise
 
-    async def get_latest_mark_price(self) -> Optional[float]:
+    async def get_latest_mark_price(self, trading_pair: Optional[str] = None) -> Optional[float]:
         """Get the latest mark price for the trading pair"""
         try:
+            # Use provided trading pair or default from config
+            pair = trading_pair or self.config.TRADING_PAIR
+
             url = f"{self.config.REST_URL}/api/v1/market/mark-price"
-            params = {"instId": self.config.TRADING_PAIR}
+            params = {"instId": pair}
 
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, params=params) as response:
@@ -228,10 +227,11 @@ class RiskManager:
                     if data['code'] == '0' and data['data']:
                         return float(data['data'][0]['markPrice'])
                     else:
-                        raise Exception(f"Failed to fetch mark price: {data.get('msg', 'Unknown error')}")
+                        self.logger.error(f"Failed to fetch mark price for {pair}: {data.get('msg', 'Unknown error')}")
+                        return None
 
         except Exception as e:
-            self.logger.error(f"Error fetching mark price: {str(e)}")
+            self.logger.error(f"Error fetching mark price for {trading_pair}: {str(e)}")
             return None
 
     def validate_tpsl_prices(self, entry_price: float, take_profit: float, stop_loss: float, position_type: str, current_price: float) -> Tuple[float, float]:
@@ -435,8 +435,12 @@ class RiskManager:
 
                     if data['code'] == '0':
                         if not data['data']:
-                            self.logger.info("No open positions found")
-                            return None
+                            self.logger.info(f"No open positions found for {self.config.TRADING_PAIR}")
+                            return {
+                                'instId': self.config.TRADING_PAIR,
+                                'positions': '0',
+                                'positionSide': 'net'
+                            }  # Return empty position data instead of None
 
                         positions = data['data']
                         for position in positions:
@@ -465,10 +469,23 @@ class RiskManager:
                                 f"Leverage: {position['leverage']}x\n"
                                 f"========================================")
 
-                        return positions[0] if positions else None
+                        return positions[0] if positions else {
+                            'instId': self.config.TRADING_PAIR,
+                            'positions': '0',
+                            'positionSide': 'net'
+                        }
                     else:
-                        raise Exception(f"Failed to fetch positions: {data.get('msg', 'Unknown error')}")
+                        self.logger.error(f"Failed to fetch positions: {data.get('msg', 'Unknown error')}")
+                        return {
+                            'instId': self.config.TRADING_PAIR,
+                            'positions': '0',
+                            'positionSide': 'net'
+                        }
 
         except Exception as e:
             self.logger.error(f"Error fetching positions: {str(e)}")
-            raise
+            return {
+                'instId': self.config.TRADING_PAIR,
+                'positions': '0',
+                'positionSide': 'net'
+            }

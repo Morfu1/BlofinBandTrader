@@ -1,6 +1,6 @@
 import os
-from dataclasses import dataclass
-from typing import Literal
+from dataclasses import dataclass, field
+from typing import Literal, List, Optional
 from dotenv import load_dotenv
 from pathlib import Path
 import logging
@@ -9,7 +9,7 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Load environment variables from .env file in attached_assets directory
+# Load environment variables from .env file (only API keys)
 env_path = Path('.env')
 logger.info(f"Looking for .env file at: {env_path.absolute()}")
 logger.info(f"File exists: {env_path.exists()}")
@@ -29,25 +29,46 @@ class Config:
     API_SECRET: str = ""
     API_PASSPHRASE: str = ""
 
+    # Trading Pair Selection Configuration
+    COIN_SELECTION_MODE: Literal[
+        "single", "multiple",
+        "top_volume"] = "multiple"  # Default selection mode
+    SINGLE_COIN: str = "AR-USDT"  # Default trading pair for single mode
+    MULTIPLE_COINS: List[str] = field(
+        default_factory=lambda: ["AR-USDT", "NEAR-USDT"])  # List of trading pairs
+    TOP_VOLUME_COUNT: int = 10  # Number of top volume pairs to track
+
+    # For backward compatibility
+    TRADING_PAIR: str = "WIF-USDT"  # Will be set based on selection mode
+
     # Trading Parameters
-    TRADING_PAIR: str = "AR-USDT"
-    TIMEFRAME: Literal["1m", "3m", "5m", "15m", "30m", "1H", "4H",
-                       "1D"] = "5m"  # Default to 1m
+    TIMEFRAME: Literal["1m", "3m", "5m", "15m", "30m", "1H", "4H", "1D"] = "5m"
     POSITION_SIZE: float = 100.0  # Margin size in USD
     LEVERAGE: int = 3
     POSITION_TYPE: Literal["isolated", "cross"] = "isolated"
     RISK_PER_TRADE: float = 0.01  # 1% risk per trade
 
-    # Exchange Limits (from Blofin API docs)
-    MIN_SIZE: float = 0.1  # Minimum order size in contracts
-    MAX_SIZE: float = 1000.0  # Maximum position size in contracts
-    CONTRACT_VALUE: float = 0.001  # Value of each contract in base currency
+    # Signal Parameters
+    COMPLETE_CROSSOVER_THRESHOLD: float = 0.05
+    SINGLE_MA_THRESHOLD: float = 0.05
+    HIGH_VOLATILITY_THRESHOLD: float = 2.5
+
+    # Risk Management Parameters
+    TAKE_PROFIT_PERCENT: float = 2.0
+    SL_PERCENTAGE: float = 1.0
+    MAX_DRAWDOWN: float = 5.0
+    TRAILING_STOP: float = 0.5
+    RISK_REWARD_RATIO: float = 2.0
+
+    # Exchange Limits
+    MIN_SIZE: float = 0.1
+    MAX_SIZE: float = 1000.0
+    CONTRACT_VALUE: float = 0.001
 
     # Strategy Parameters
     SMA_PERIOD: int = 21
     EMA_PERIOD: int = 34
-    TAKE_PROFIT_PERCENT: float = 2.0  # Default 2%
-    CANDLE_LOOKBACK: int = 10  # For SL calculation
+    CANDLE_LOOKBACK: int = 10
 
     # API Endpoints
     REST_URL: str = "https://demo-trading-openapi.blofin.com"
@@ -60,69 +81,28 @@ class Config:
         self.API_SECRET = os.getenv("BLOFIN_API_SECRET", "")
         self.API_PASSPHRASE = os.getenv("BLOFIN_PASSPHRASE", "")
 
-        # Log loaded values (without exposing sensitive data)
-        logger.info(f"API_KEY loaded: {bool(self.API_KEY)}")
-        logger.info(f"API_SECRET loaded: {bool(self.API_SECRET)}")
-        logger.info(f"API_PASSPHRASE loaded: {bool(self.API_PASSPHRASE)}")
-        logger.info(f"Using trading pair: {self.TRADING_PAIR}")
-
-        # Load trading parameters from environment variables with validation
-        env_timeframe = os.getenv("TIMEFRAME")
-        logger.info(
-            f"Environment TIMEFRAME value: {env_timeframe or 'not set, using default: 1m'}"
-        )
-
-        if env_timeframe:
-            if env_timeframe in [
-                    "1m", "3m", "5m", "15m", "30m", "1H", "4H", "1D"
-            ]:
-                self.TIMEFRAME = env_timeframe
-                logger.info(
-                    f"TIMEFRAME set from environment: {self.TIMEFRAME}")
-            else:
-                logger.warning(
-                    f"Invalid TIMEFRAME in environment: {env_timeframe}, using default: {self.TIMEFRAME}"
-                )
-
-        if os.getenv("POSITION_SIZE"):
-            try:
-                self.POSITION_SIZE = float(os.getenv("POSITION_SIZE"))
-                logger.info(
-                    f"POSITION_SIZE set from environment: {self.POSITION_SIZE}"
-                )
-            except ValueError:
-                logger.warning(
-                    f"Invalid POSITION_SIZE in environment, using default: {self.POSITION_SIZE}"
-                )
-
-        if os.getenv("LEVERAGE"):
-            try:
-                self.LEVERAGE = int(os.getenv("LEVERAGE"))
-                logger.info(f"LEVERAGE set from environment: {self.LEVERAGE}")
-            except ValueError:
-                logger.warning(
-                    f"Invalid LEVERAGE in environment, using default: {self.LEVERAGE}"
-                )
-
-        if os.getenv("POSITION_TYPE"):
-            position_type = os.getenv("POSITION_TYPE").lower()
-            if position_type in ["isolated", "cross"]:
-                self.POSITION_TYPE = position_type
-                logger.info(
-                    f"POSITION_TYPE set from environment: {self.POSITION_TYPE}"
-                )
-            else:
-                logger.warning(
-                    f"Invalid POSITION_TYPE in environment, using default: {self.POSITION_TYPE}"
-                )
-
+        # Validate required credentials
         if not all([self.API_KEY, self.API_SECRET, self.API_PASSPHRASE]):
             raise ValueError("API credentials not properly configured")
 
+        # Set trading pair based on selection mode
+        if self.COIN_SELECTION_MODE == "single":
+            self.TRADING_PAIR = self.SINGLE_COIN
+        elif self.COIN_SELECTION_MODE == "multiple" and self.MULTIPLE_COINS:
+            self.TRADING_PAIR = self.MULTIPLE_COINS[
+                0]  # Set first coin as default
+
         # Log final configuration
         logger.info(
-            f"Final configuration - TIMEFRAME: {self.TIMEFRAME}, TRADING_PAIR: {self.TRADING_PAIR}"
-        )
+            f"\nFinal Trading Configuration:\n"
+            f"========================================\n"
+            f"Selection Mode: {self.COIN_SELECTION_MODE}\n"
+            f"Single Coin: {self.SINGLE_COIN if self.COIN_SELECTION_MODE == 'single' else 'N/A'}\n"
+            f"Multiple Coins: {self.MULTIPLE_COINS if self.COIN_SELECTION_MODE == 'multiple' else 'N/A'}\n"
+            f"Top Volume Count: {self.TOP_VOLUME_COUNT if self.COIN_SELECTION_MODE == 'top_volume' else 'N/A'}\n"
+            f"Timeframe: {self.TIMEFRAME}\n"
+            f"Default Trading Pair: {self.TRADING_PAIR}\n"
+            f"========================================")
 
 
 # Create config instance
