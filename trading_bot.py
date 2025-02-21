@@ -169,8 +169,9 @@ class TradingBot:
     async def handle_candle_update(self, candle_data: List, trading_pair: str):
         """Handle real-time candlestick updates for a specific trading pair"""
         try:
-            # Set current trading pair in config
-            self.config.TRADING_PAIR = trading_pair
+            # Don't modify global config, use trading_pair parameter instead
+            if trading_pair not in self.current_trading_pairs:
+                return
 
             # Extract and validate candle data
             try:

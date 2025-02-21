@@ -35,7 +35,7 @@ class Config:
         "top_volume"] = "multiple"  # Default selection mode
     SINGLE_COIN: str = "AR-USDT"  # Default trading pair for single mode
     MULTIPLE_COINS: List[str] = field(
-        default_factory=lambda: ["AR-USDT", "NEAR-USDT"])  # List of trading pairs
+        default_factory=lambda: ["AR-USDT", "NEAR-USDT", "BRETT-USDT", "POPCAT-USDT", "WIF-USDT"])  # List of trading pairs
     TOP_VOLUME_COUNT: int = 10  # Number of top volume pairs to track
 
     # For backward compatibility
@@ -88,20 +88,22 @@ class Config:
         # Set trading pair based on selection mode
         if self.COIN_SELECTION_MODE == "single":
             self.TRADING_PAIR = self.SINGLE_COIN
+            self.MULTIPLE_COINS = [self.SINGLE_COIN]
         elif self.COIN_SELECTION_MODE == "multiple" and self.MULTIPLE_COINS:
-            self.TRADING_PAIR = self.MULTIPLE_COINS[
-                0]  # Set first coin as default
+            # Keep TRADING_PAIR for backward compatibility but don't rely on it
+            self.TRADING_PAIR = self.MULTIPLE_COINS[0]
+        elif self.COIN_SELECTION_MODE == "top_volume":
+            # Will be populated later by MarketScanner
+            self.MULTIPLE_COINS = []
+            self.TRADING_PAIR = None
 
         # Log final configuration
         logger.info(
             f"\nFinal Trading Configuration:\n"
             f"========================================\n"
             f"Selection Mode: {self.COIN_SELECTION_MODE}\n"
-            f"Single Coin: {self.SINGLE_COIN if self.COIN_SELECTION_MODE == 'single' else 'N/A'}\n"
-            f"Multiple Coins: {self.MULTIPLE_COINS if self.COIN_SELECTION_MODE == 'multiple' else 'N/A'}\n"
-            f"Top Volume Count: {self.TOP_VOLUME_COUNT if self.COIN_SELECTION_MODE == 'top_volume' else 'N/A'}\n"
+            f"Active Coins: {self.MULTIPLE_COINS}\n"
             f"Timeframe: {self.TIMEFRAME}\n"
-            f"Default Trading Pair: {self.TRADING_PAIR}\n"
             f"========================================")
 
 

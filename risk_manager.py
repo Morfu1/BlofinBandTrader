@@ -287,30 +287,33 @@ class RiskManager:
             price = Decimal(str(current_price))
             leverage = Decimal(str(self.config.LEVERAGE))
 
-            # Calculate maximum position value based on risk parameters
-            max_risk_amount = target_margin * Decimal('0.01')  # 1% risk per trade
-            position_value = max_risk_amount * leverage * Decimal('100')  # Scale up by leverage
+            # Calculate position value in USDT (margin * leverage)
+            position_value_usdt = target_margin * leverage
 
-            # Calculate number of contracts
-            contract_value_usdt = self.contract_value * price
-            position_size = position_value / contract_value_usdt
+            # Calculate actual position size in base currency (contracts)
+            # position_size = (position_value_usdt / price) / contract_value
+            position_size = position_value_usdt / (price * self.contract_value)
 
             # Round down to lot size precision
             position_size_rounded = (position_size / self.lot_size).quantize(
                 Decimal('1'), rounding=ROUND_DOWN) * self.lot_size
 
-            # Verify position limits
-            if position_size_rounded < self.min_size:
-                self.logger.error(f"Position size {position_size_rounded} below minimum {self.min_size}")
-                return None
+            # Calculate actual margin used after rounding
+            actual_position_value = position_size_rounded * price * self.contract_value
+            actual_margin = actual_position_value / leverage
 
+            # Extra safety check for maximum position size
             if position_size_rounded > self.max_market_size:
-                self.logger.warning(f"Position size {position_size_rounded} exceeds maximum {self.max_market_size}. Adjusting to max size.")
+                self.logger.warning(
+                    f"Position size {float(position_size_rounded)} exceeds maximum {float(self.max_market_size)}. "
+                    f"Adjusting to max size.")
                 position_size_rounded = self.max_market_size
 
-            # Calculate actual margin used
-            actual_position_value = position_size_rounded * contract_value_usdt
-            actual_margin = actual_position_value / leverage
+            # Verify minimum size
+            if position_size_rounded < self.min_size:
+                self.logger.error(
+                    f"Calculated position size {float(position_size_rounded)} is below minimum {float(self.min_size)}")
+                return None
 
             self.logger.info(
                 f"\nPosition Size Calculation Details:\n"
@@ -320,14 +323,12 @@ class RiskManager:
                 f"- Leverage: {int(leverage)}x\n"
                 f"- Current Price: ${float(price):.6f}\n"
                 f"- Contract Value: {float(self.contract_value):.8f}\n"
-                f"\nRisk Parameters:\n"
-                f"- Risk Per Trade: 1.00%\n"
-                f"- Max Risk Amount: ${float(max_risk_amount):.2f}\n"
                 f"\nCalculation Results:\n"
-                f"- Contract Value in USDT: ${float(contract_value_usdt):.2f}\n"
-                f"- Position Value: ${float(actual_position_value):.2f}\n"
-                f"- Position Size: {float(position_size_rounded):.8f} contracts\n"
-                f"- Actual Margin: ${float(actual_margin):.2f}\n"
+                f"- Position Value (USDT): ${float(position_value_usdt):.2f}\n"
+                f"- Raw Position Size: {float(position_size):.8f}\n"
+                f"- Rounded Position Size: {float(position_size_rounded):.8f} contracts\n"
+                f"- Final Position Value: ${float(actual_position_value):.2f}\n"
+                f"- Actual Margin Used: ${float(actual_margin):.2f}\n"
                 f"========================================")
 
             return {

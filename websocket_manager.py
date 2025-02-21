@@ -98,29 +98,34 @@ class WebSocketManager:
     async def subscribe_channels(self):
         """Subscribe to required WebSocket channels"""
         try:
-            # Subscribe to candlestick channel using configured trading pair and timeframe
-            candle_sub = {
-                "op": "subscribe",
-                "args": [{
-                    "channel": f"candle{self.config.TIMEFRAME}",  # Use timeframe from config
-                    "instId": self.config.TRADING_PAIR
-                }]
-            }
+            # Get all trading pairs from config
+            trading_pairs = (self.config.MULTIPLE_COINS 
+                           if self.config.COIN_SELECTION_MODE == "multiple"
+                           else [self.config.SINGLE_COIN])
 
-            self.logger.info(
-                f"Subscribing to candlestick channel for {self.config.TRADING_PAIR} with timeframe {self.config.TIMEFRAME}"
-            )
-            await self.ws_public.send(json.dumps(candle_sub))
+            # Subscribe to candlestick channel for each trading pair
+            for pair in trading_pairs:
+                candle_sub = {
+                    "op": "subscribe",
+                    "args": [{
+                        "channel": f"candle{self.config.TIMEFRAME}",
+                        "instId": pair
+                    }]
+                }
 
-            # Wait for subscription confirmation
-            response = await self.ws_public.recv()
-            self.logger.info(
-                f"Subscription response for {self.config.TRADING_PAIR} with timeframe {self.config.TIMEFRAME}: {response}"
-            )
+                self.logger.info(
+                    f"Subscribing to candlestick channel for {pair} with timeframe {self.config.TIMEFRAME}"
+                )
+                await self.ws_public.send(json.dumps(candle_sub))
+
+                # Wait for subscription confirmation
+                response = await self.ws_public.recv()
+                self.logger.info(
+                    f"Subscription response for {pair}: {response}"
+                )
 
         except Exception as e:
-            self.logger.error(
-                f"Subscription error for {self.config.TRADING_PAIR} with timeframe {self.config.TIMEFRAME}: {str(e)}")
+            self.logger.error(f"Subscription error: {str(e)}")
             self.connected = False
             await self.reconnect()
 
