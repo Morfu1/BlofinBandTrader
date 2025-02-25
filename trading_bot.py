@@ -144,10 +144,10 @@ class TradingBot:
         for pair in self.current_trading_pairs:
             self.websocket_manager.register_callback(
                 'candle',
-                lambda data, pair=pair: self.handle_candle_update(data, pair)
+                self.handle_candle_update
             )
             self.logger.info(
-                f"Registered candle update callback for {pair} on {self.config.TIMEFRAME} timeframe"
+                f"Registered candle update callback for all pairs on {self.config.TIMEFRAME} timeframe"
             )
 
         # Initialize indicators with clean data for each pair

@@ -192,13 +192,6 @@ class WebSocketManager:
                     channel = data['arg'].get('channel', '')
                     inst_id = data['arg'].get('instId', '')
 
-                    # Verify the message is for our configured trading pair
-                    if inst_id != self.config.TRADING_PAIR:
-                        self.logger.debug(
-                            f"Skipping data for unexpected trading pair: {inst_id}"
-                        )
-                        continue
-
                     if channel.startswith('candle') and self.callbacks.get(
                             'candle'):
                         candle_data = data['data']
@@ -227,10 +220,10 @@ class WebSocketManager:
                                             f"Processing candle update for {self.config.TRADING_PAIR}"
                                         )
 
-                                        # Execute callback with validated data
-                                        await self.callbacks['candle'](candle_data)
+                                        # Execute callback with validated data, passing the trading pair
+                                        await self.callbacks['candle'](candle_data, inst_id)
                                         self.logger.debug(
-                                            f"Successfully processed candle update for {self.config.TRADING_PAIR}"
+                                            f"Successfully processed candle update for {inst_id}"
                                         )
                                 else:
                                     self.logger.warning(
