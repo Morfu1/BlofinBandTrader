@@ -302,6 +302,24 @@ class RiskManager:
             actual_position_value = position_size_rounded * price * self.contract_value
             actual_margin = actual_position_value / leverage
 
+            # Add this validation after calculating actual_margin
+            if actual_margin > (target_margin * (Decimal('1') + self.margin_tolerance)):
+                self.logger.warning(
+                    f"Calculated margin ${float(actual_margin):.2f} exceeds target margin ${float(target_margin):.2f} by more than {float(self.margin_tolerance*100)}%"
+                )
+                # Recalculate position size to match target margin
+                adjusted_size = (target_margin * leverage) / (price * self.contract_value)
+                # Round down to lot size precision
+                position_size_rounded = (adjusted_size / self.lot_size).quantize(
+                    Decimal('1'), rounding=ROUND_DOWN) * self.lot_size
+                # Recalculate actual margin
+                actual_position_value = position_size_rounded * price * self.contract_value
+                actual_margin = actual_position_value / leverage
+                
+                self.logger.info(
+                    f"Adjusted position size to {float(position_size_rounded):.8f} contracts with margin ${float(actual_margin):.2f}"
+                )
+
             # Extra safety check for maximum position size
             if position_size_rounded > self.max_market_size:
                 self.logger.warning(

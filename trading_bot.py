@@ -423,6 +423,10 @@ class TradingBot:
                 self.logger.warning(f"Cannot open {position_type} position for {trading_pair} - already have one open")
                 return
 
+            # Ensure risk manager is initialized with correct trading pair parameters
+            self.config.TRADING_PAIR = trading_pair
+            await self.risk_manager.initialize()
+
             # Calculate position size based on entry price
             position_info = self.risk_manager.calculate_position_size(entry_price)
 
