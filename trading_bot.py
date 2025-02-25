@@ -220,7 +220,11 @@ class TradingBot:
                             # Update existing candle
                             for key, value in current_candle.items():
                                 if key != 'ts':  # Skip timestamp as it's the index
-                                    self.historical_data[trading_pair].loc[dt, key] = value
+                                    if key == 'confirm':
+                                        # Convert to boolean
+                                        self.historical_data[trading_pair].loc[dt, key] = bool(value)
+                                    else:
+                                        self.historical_data[trading_pair].loc[dt, key] = value
                         else:
                             # Add new candle
                             new_data = pd.DataFrame({k: [v] for k, v in current_candle.items() if k != 'ts'}, index=[dt])
@@ -289,8 +293,6 @@ class TradingBot:
                         f"{'=' * 100}\n"
                         f"📊 Current Price Action:\n"
                         f"   Open: {current_candle['open']:.6f}\n"
-                        f"   High: {current_candle['high']:.6f}\n"
-                        f"   Low: {current_candle['low']:.6f}\n"
                         f"   Close: {current_candle['close']:.6f}\n"
                         f"   Volume: {current_candle['vol']:.2f}\n"
                         f"   Candle Confirmed: {'✅' if current_candle['confirm'] else '❌'}\n\n"
@@ -603,7 +605,7 @@ class TradingBot:
                             'vol': float,
                             'volCurrency': float,
                             'volCurrencyQuote': float,
-                            'confirm': int,
+                            'confirm': bool,
                             'trading_pair': str
                         })
 
