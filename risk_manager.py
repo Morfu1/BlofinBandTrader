@@ -235,35 +235,25 @@ class RiskManager:
             return None
 
     def validate_tpsl_prices(self, entry_price: float, take_profit: float, stop_loss: float, position_type: str, current_price: float) -> Tuple[float, float]:
-        """Validate and adjust TPSL prices if needed"""
+        """Validate SL prices but don't modify the TP (enforce configured percentage)"""
         try:
+            # Skip TP validation completely - keep original calculated TP
+            
+            # Only validate SL
             if position_type == "long":
-                # For long positions, TP must be higher than current price
-                if take_profit <= current_price:
-                    # Adjust TP to be 0.5% above current price
-                    take_profit = float(self.round_to_tick(current_price * 1.005))
-                    self.logger.warning(f"Adjusted TP to {take_profit} (0.5% above current price)")
-
-                # SL must be lower than current price
+                # For long positions, SL must be lower than current price
                 if stop_loss >= current_price:
                     # Adjust SL to be 0.5% below current price
                     stop_loss = float(self.round_to_tick(current_price * 0.995))
                     self.logger.warning(f"Adjusted SL to {stop_loss} (0.5% below current price)")
             else:
-                # For short positions, TP must be lower than current price
-                if take_profit >= current_price:
-                    # Adjust TP to be 0.5% below current price
-                    take_profit = float(self.round_to_tick(current_price * 0.995))
-                    self.logger.warning(f"Adjusted TP to {take_profit} (0.5% below current price)")
-
-                # SL must be higher than current price
+                # For short positions, SL must be higher than current price
                 if stop_loss <= current_price:
                     # Adjust SL to be 0.5% above current price
                     stop_loss = float(self.round_to_tick(current_price * 1.005))
                     self.logger.warning(f"Adjusted SL to {stop_loss} (0.5% above current price)")
-
+            
             return take_profit, stop_loss
-
         except Exception as e:
             self.logger.error(f"Error validating TPSL prices: {str(e)}")
             raise
