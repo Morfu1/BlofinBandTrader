@@ -131,10 +131,32 @@ class TradingBot:
         # Reset indicators state
         self.indicators.reset_state()
 
-        # Load fresh historical data for each pair
+        # Load fresh historical data for each pair - with retry logic
         for pair in self.current_trading_pairs:
             self.config.TRADING_PAIR = pair  # Set current pair for data loading
-            await self.load_historical_data()
+            retry_count = 3
+            success = False
+            
+            while retry_count > 0 and not success:
+                try:
+                    await self.load_historical_data()
+                    # Check if we got valid data
+                    if (pair in self.historical_data and 
+                        not self.historical_data[pair].empty and 
+                        len(self.historical_data[pair]) > 10):  # At least 10 candles
+                        success = True
+                        self.logger.info(f"Successfully loaded historical data for {pair}")
+                    else:
+                        self.logger.warning(f"Insufficient historical data for {pair}, retrying...")
+                        retry_count -= 1
+                        await asyncio.sleep(1)
+                except Exception as e:
+                    self.logger.error(f"Error loading historical data for {pair}: {str(e)}")
+                    retry_count -= 1
+                    await asyncio.sleep(1)
+            
+            if not success:
+                self.logger.error(f"Could not load historical data for {pair} after multiple attempts")
 
         # Setup WebSocket with all trading pairs
         self.websocket_manager = WebSocketManager(self.config)
@@ -144,7 +166,7 @@ class TradingBot:
         for pair in self.current_trading_pairs:
             self.websocket_manager.register_callback(
                 'candle',
-                self.handle_candle_update
+                self.handle_candle_update  # Pass the method reference directly
             )
             self.logger.info(
                 f"Registered candle update callback for all pairs on {self.config.TIMEFRAME} timeframe"
@@ -169,8 +191,9 @@ class TradingBot:
     async def handle_candle_update(self, candle_data: List, trading_pair: str):
         """Handle real-time candlestick updates for a specific trading pair"""
         try:
-            # Don't modify global config, use trading_pair parameter instead
+            # Don't modify global config, use trading_pair parameter directly
             if trading_pair not in self.current_trading_pairs:
+                self.logger.warning(f"Received candle for trading pair not in current list: {trading_pair}")
                 return
 
             # Extract and validate candle data
@@ -184,15 +207,46 @@ class TradingBot:
                     'vol': float(candle_data[0][5]),
                     'volCurrency': float(candle_data[0][6]),
                     'volCurrencyQuote': float(candle_data[0][7]),
-                    'confirm': bool(int(float(candle_data[0][8])))
-                    if len(candle_data[0]) > 8 else False,
+                    'confirm': bool(int(float(candle_data[0][8]))) if len(candle_data[0]) > 8 else False,
                 }
-
+                
+                # Update our internal historical data structure with the new candle
+                dt = pd.to_datetime(current_candle['ts'], unit='ms')
+                if trading_pair in self.historical_data:
+                    if len(self.historical_data[trading_pair]) > 0:
+                        last_timestamp = self.historical_data[trading_pair].index[-1]
+                        
+                        if dt == last_timestamp:
+                            # Update existing candle
+                            for key, value in current_candle.items():
+                                if key != 'ts':  # Skip timestamp as it's the index
+                                    self.historical_data[trading_pair].loc[dt, key] = value
+                        else:
+                            # Add new candle
+                            new_data = pd.DataFrame({k: [v] for k, v in current_candle.items() if k != 'ts'}, index=[dt])
+                            self.historical_data[trading_pair] = pd.concat([self.historical_data[trading_pair], new_data])
+                    else:
+                        # First data point for this pair
+                        new_data = pd.DataFrame({k: [v] for k, v in current_candle.items() if k != 'ts'}, index=[dt])
+                        self.historical_data[trading_pair] = new_data
+                else:
+                    # Initialize historical data for this pair if it doesn't exist
+                    self.historical_data[trading_pair] = pd.DataFrame()
+                    new_data = pd.DataFrame({k: [v] for k, v in current_candle.items() if k != 'ts'}, index=[dt])
+                    self.historical_data[trading_pair] = new_data
+                
+                # Don't reload historical data, just update with the new candle
+                self.indicators.update_real_time_data(
+                    trading_pair, 
+                    current_candle['ts'], 
+                    current_candle['close']
+                )
+                
                 # Get previous candle data
                 previous_candle = None
-                if len(self.historical_data[trading_pair]) > 0:
+                if len(self.historical_data[trading_pair]) > 1:  # Need at least 2 candles
                     historical_df = self.historical_data[trading_pair]
-                    previous_candle = historical_df[historical_df.index < pd.to_datetime(current_candle['ts'], unit='ms')].iloc[-1]
+                    previous_candle = historical_df[historical_df.index < dt].iloc[-1]
 
                 # Calculate indicators
                 sma, ema = self.indicators.calculate_bands(trading_pair, current_candle['close'])
@@ -204,60 +258,15 @@ class TradingBot:
                     band_low = min(current_sma, current_ema)
 
                     # Position status determination
-                    position_status = "BETWEEN BANDS"
-                    if current_candle['close'] > band_high:
-                        position_status = "ABOVE BANDS"
-                    elif current_candle['close'] < band_low:
-                        position_status = "BELOW BANDS"
-
-                    # Format timestamp
-                    candle_time = datetime.fromtimestamp(current_candle['ts'] / 1000).strftime('%Y-%m-%d %H:%M:%S')
-
-                    # Check if we have an open position
                     has_position = self.positions[trading_pair]['position_open']
-                    position_type = (
-                        "LONG" if self.positions[trading_pair]['long_position_open']
-                        else "SHORT" if self.positions[trading_pair]['short_position_open']
-                        else "NONE"
-                    )
+                    position_type = "NONE"
+                    if self.positions[trading_pair]['long_position_open']:
+                        position_type = "LONG"
+                    elif self.positions[trading_pair]['short_position_open']:
+                        position_type = "SHORT"
 
-                    # Calculate price changes
-                    current_change = (
-                        (current_candle['close'] - current_candle['open']) /
-                        current_candle['open'] * 100
-                    )
-
-                    # Previous candle stats if available
-                    prev_candle_stats = ""
-                    if previous_candle is not None:
-                        prev_change = (
-                            (float(previous_candle['close']) - float(previous_candle['open'])) /
-                            float(previous_candle['open']) * 100
-                        )
-                        # Calculate previous candle's band position
-                        prev_sma, prev_ema = self.indicators.calculate_bands(
-                            trading_pair, 
-                            float(previous_candle['close'])
-                        )
-                        if not prev_sma.empty and not prev_ema.empty:
-                            prev_band_high = max(prev_sma.iloc[-1], prev_ema.iloc[-1])
-                            prev_band_low = min(prev_sma.iloc[-1], prev_ema.iloc[-1])
-                            prev_position = "BETWEEN BANDS"
-                            if float(previous_candle['close']) > prev_band_high:
-                                prev_position = "ABOVE BANDS"
-                            elif float(previous_candle['close']) < prev_band_low:
-                                prev_position = "BELOW BANDS"
-
-                        prev_time = previous_candle.name.strftime('%H:%M:%S')
-                        prev_candle_stats = (
-                            f"\nPrevious Candle ({prev_time}):\n"
-                            f"   Open: ${float(previous_candle['open']):.6f}\n"
-                            f"   Close: ${float(previous_candle['close']):.6f}\n"
-                            f"   High: ${float(previous_candle['high']):.6f}\n"
-                            f"   Low: ${float(previous_candle['low']):.6f}\n"
-                            f"   Change: {prev_change:+.2f}%\n"
-                            f"   Position vs Bands: {prev_position}"
-                        )
+                    # Format candle time for display
+                    candle_time = datetime.fromtimestamp(current_candle['ts'] / 1000).strftime('%Y-%m-%d %H:%M:%S')
 
                     # Check for signals only if we don't have a position
                     is_valid_signal = False
@@ -279,20 +288,18 @@ class TradingBot:
                         f"🪙 {trading_pair} Status Update - {candle_time}\n"
                         f"{'=' * 100}\n"
                         f"📊 Current Price Action:\n"
-                        f"   Close: ${current_candle['close']:.6f} ({current_change:+.2f}%)\n"
-                        f"   Open: ${current_candle['open']:.6f}\n"
-                        f"   High: ${current_candle['high']:.6f}\n"
-                        f"   Low: ${current_candle['low']:.6f}\n"
+                        f"   Open: {current_candle['open']:.6f}\n"
+                        f"   High: {current_candle['high']:.6f}\n"
+                        f"   Low: {current_candle['low']:.6f}\n"
+                        f"   Close: {current_candle['close']:.6f}\n"
                         f"   Volume: {current_candle['vol']:.2f}\n"
-                        f"   Status: {'✅ Confirmed' if current_candle['confirm'] else '⏳ Pending'}"
-                        f"{prev_candle_stats}\n\n"
-                        f"📈 Band Analysis:\n"
-                        f"   SMA ({self.indicators.sma_period}): ${current_sma:.6f}\n"
-                        f"   EMA ({self.indicators.ema_period}): ${current_ema:.6f}\n"
-                        f"   Upper Band: ${band_high:.6f}\n"
-                        f"   Lower Band: ${band_low:.6f}\n"
-                        f"   Current Price vs Bands: {position_status}\n\n"
-                        f"💼 Trading Status:\n"
+                        f"   Candle Confirmed: {'✅' if current_candle['confirm'] else '❌'}\n\n"
+                        f"📈 Indicator Analysis:\n"
+                        f"   SMA: {current_sma:.6f}\n"
+                        f"   EMA: {current_ema:.6f}\n"
+                        f"   Band High: {band_high:.6f}\n"
+                        f"   Band Low: {band_low:.6f}\n\n"
+                        f"🔍 Position Analysis:\n"
                         f"   Active Position: {position_type}\n"
                         f"   Signal Analysis: {signal_status if not has_position else '🔒 Position Open - Not Scanning'}\n"
                         f"   {'🎯 Valid Entry Point!' if is_valid_signal and not has_position else '📈 Managing Position...' if has_position else '⏳ Waiting for Setup...'}\n"
@@ -300,7 +307,11 @@ class TradingBot:
 
                     # Process signal if valid and candle is confirmed
                     if is_valid_signal and current_candle['confirm'] and not has_position:
+                        # Temporarily set the trading pair for the execution
+                        original_pair = self.config.TRADING_PAIR
+                        self.config.TRADING_PAIR = trading_pair
                         await self.check_signals(pd.Series(current_candle), trading_pair)
+                        self.config.TRADING_PAIR = original_pair
 
             except (IndexError, ValueError) as e:
                 self.logger.error(f"Invalid candle data format for {trading_pair}: {str(e)}")
@@ -548,76 +559,83 @@ class TradingBot:
         url = f"{self.config.REST_URL}/api/v1/market/candles"
         params = {
             "instId": self.config.TRADING_PAIR,
-            "bar": self.config.TIMEFRAME,  # Use timeframe from config
-            "limit": "100"
+            "bar": self.config.TIMEFRAME,
+            "limit": "300"  # Increase from 100 to 300 for more history
         }
-
+        
         self.logger.info(
             f"Loading historical data for {self.config.TRADING_PAIR} on {self.config.TIMEFRAME} timeframe"
         )
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, params=params) as response:
-                data = await response.json()
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params) as response:
+                    data = await response.json()
+                    
+                    if data['code'] == '0':
+                        # Clear existing data to prevent mixing with old coin data
+                        if self.config.TRADING_PAIR in self.historical_data:
+                            self.historical_data[self.config.TRADING_PAIR] = pd.DataFrame()
 
-                if data['code'] == '0':
-                    # Clear existing data to prevent mixing with old coin data
-                    if self.config.TRADING_PAIR in self.historical_data:
-                        self.historical_data[self.config.TRADING_PAIR] = pd.DataFrame()
+                        # Convert data to DataFrame
+                        candles = data['data']
+                        df = pd.DataFrame(candles,
+                                          columns=[
+                                              'ts', 'open', 'high', 'low', 'close',
+                                              'vol', 'volCurrency',
+                                              'volCurrencyQuote', 'confirm'
+                                          ])
 
-                    # Convert data to DataFrame
-                    candles = data['data']
-                    df = pd.DataFrame(candles,
-                                      columns=[
-                                          'ts', 'open', 'high', 'low', 'close',
-                                          'vol', 'volCurrency',
-                                          'volCurrencyQuote', 'confirm'
-                                      ])
+                        # Add trading pair column for data isolation
+                        df['trading_pair'] = self.config.TRADING_PAIR
 
-                    # Add trading pair column for data isolation
-                    df['trading_pair'] = self.config.TRADING_PAIR
+                        # Ensure all numeric columns are properly converted
+                        df = df.astype({
+                            'ts': float,
+                            'open': float,
+                            'high': float,
+                            'low': float,
+                            'close': float,
+                            'vol': float,
+                            'volCurrency': float,
+                            'volCurrencyQuote': float,
+                            'confirm': int,
+                            'trading_pair': str
+                        })
 
-                    # Ensure all numeric columns are properly converted
-                    df = df.astype({
-                        'ts': float,
-                        'open': float,
-                        'high': float,
-                        'low': float,
-                        'close': float,
-                        'vol': float,
-                        'volCurrency': float,
-                        'volCurrencyQuote': float,
-                        'confirm': int,
-                        'trading_pair': str
-                    })
+                        # Convert timestamps to datetime and set as index
+                        df.index = pd.to_datetime(df['ts'].astype(int), unit='ms')
+                        df = df.sort_index()  # Ensure chronological order
 
-                    # Convert timestamps to datetime and set as index
-                    df.index = pd.to_datetime(df['ts'].astype(int), unit='ms')
-                    df = df.sort_index()  # Ensure chronological order
+                        # Store the processed DataFrame
+                        self.historical_data[self.config.TRADING_PAIR] = df
 
-                    # Store the processed DataFrame
-                    self.historical_data[self.config.TRADING_PAIR] = df
+                        # Initialize historical data for indicators with sorted data
+                        self.indicators.initialize_historical_data(
+                            self.config.TRADING_PAIR, self.historical_data[self.config.TRADING_PAIR]['close'])
 
-                    # Initialize historical data for indicators with sorted data
-                    self.indicators.initialize_historical_data(
-                        self.config.TRADING_PAIR, self.historical_data[self.config.TRADING_PAIR]['close'])
+                        # Format dates for logging
+                        start_date = df.index[0].strftime('%Y-%m-%d %H:%M:%S')
+                        end_date = df.index[-1].strftime('%Y-%m-%d %H:%M:%S')
 
-                    # Format dates for logging
-                    start_date = df.index[0].strftime('%Y-%m-%d %H:%M:%S')
-                    end_date = df.index[-1].strftime('%Y-%m-%d %H:%M:%S')
-
-                    self.logger.info(
-                        f"\nHistorical Data Loaded for {self.config.TRADING_PAIR}:\n"
-                        f"========================================\n"
-                        f"Trading Pair: {self.config.TRADING_PAIR}\n"
-                        f"Timeframe: {self.config.TIMEFRAME}\n"
-                        f"Number of candles: {len(df)}\n"
-                        f"Price range: ${df['close'].min():.6f} - ${df['close'].max():.6f}\n"
-                        f"Time range: {start_date} - {end_date}\n"
-                        f"DataFrame Memory Usage: {self.historical_data[self.config.TRADING_PAIR].memory_usage().sum() / 1024:.2f} KB\n"
-                        f"========================================")
-                else:
-                    raise Exception(
-                        f"Failed to load historical data for {self.config.TRADING_PAIR}: {data['msg']}")
+                        self.logger.info(
+                            f"\nHistorical Data Loaded for {self.config.TRADING_PAIR}:\n"
+                            f"========================================\n"
+                            f"Trading Pair: {self.config.TRADING_PAIR}\n"
+                            f"Timeframe: {self.config.TIMEFRAME}\n"
+                            f"Number of candles: {len(df)}\n"
+                            f"Price range: ${df['close'].min():.6f} - ${df['close'].max():.6f}\n"
+                            f"Time range: {start_date} - {end_date}\n"
+                            f"DataFrame Memory Usage: {self.historical_data[self.config.TRADING_PAIR].memory_usage().sum() / 1024:.2f} KB\n"
+                            f"========================================")
+                    else:
+                        self.logger.error(f"Failed to load historical data: {data.get('msg', 'Unknown error')}")
+                        # Initialize with empty DataFrame to prevent errors
+                        self.historical_data[self.config.TRADING_PAIR] = pd.DataFrame(columns=['close'])
+        except Exception as e:
+            self.logger.error(f"Error loading historical data: {str(e)}")
+            # Initialize with empty DataFrame to prevent errors
+            self.historical_data[self.config.TRADING_PAIR] = pd.DataFrame(columns=['close'])
 
     async def run(self):
         """Run the trading bot"""

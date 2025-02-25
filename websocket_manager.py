@@ -99,10 +99,12 @@ class WebSocketManager:
         """Subscribe to required WebSocket channels"""
         try:
             # Get all trading pairs from config
-            trading_pairs = (self.config.MULTIPLE_COINS 
-                           if self.config.COIN_SELECTION_MODE == "multiple"
-                           else [self.config.SINGLE_COIN])
-
+            trading_pairs = (self.config.MULTIPLE_COINS
+                             if self.config.COIN_SELECTION_MODE == "multiple"
+                             else [self.config.SINGLE_COIN])
+            
+            self.logger.info(f"Subscribing to channels for pairs: {trading_pairs}")
+            
             # Subscribe to candlestick channel for each trading pair
             for pair in trading_pairs:
                 candle_sub = {
@@ -112,18 +114,18 @@ class WebSocketManager:
                         "instId": pair
                     }]
                 }
-
-                self.logger.info(
-                    f"Subscribing to candlestick channel for {pair} with timeframe {self.config.TIMEFRAME}"
-                )
+                
+                self.logger.info(f"Subscribing to candlestick channel for {pair} with timeframe {self.config.TIMEFRAME}")
                 await self.ws_public.send(json.dumps(candle_sub))
-
-                # Wait for subscription confirmation
+                
+                # Add a small delay between subscriptions to ensure proper order
+                await asyncio.sleep(0.5)
+            
+            # Wait for all subscription responses
+            for _ in trading_pairs:
                 response = await self.ws_public.recv()
-                self.logger.info(
-                    f"Subscription response for {pair}: {response}"
-                )
-
+                self.logger.info(f"Subscription response received: {response}")
+            
         except Exception as e:
             self.logger.error(f"Subscription error: {str(e)}")
             self.connected = False
@@ -176,83 +178,66 @@ class WebSocketManager:
                 if not self.connected:
                     await asyncio.sleep(1)
                     continue
-
+                
                 # Handle public messages
                 message = await self.ws_public.recv()
                 if message == 'pong':
                     self.logger.debug("Received pong response")
                     continue
-
+                
                 data = json.loads(message)
+                
+                # Skip subscription confirmations in normal handler flow
+                if 'event' in data and data['event'] == 'subscribe':
+                    self.logger.debug(f"Received subscription confirmation: {data}")
+                    continue
+                
                 if 'event' in data and data['event'] == 'error':
                     self.logger.error(f"WebSocket error: {data}")
                     continue
-
+                
                 if 'data' in data and 'arg' in data:
                     channel = data['arg'].get('channel', '')
                     inst_id = data['arg'].get('instId', '')
-
-                    if channel.startswith('candle') and self.callbacks.get(
-                            'candle'):
+                    
+                    # Get all trading pairs from config
+                    trading_pairs = (self.config.MULTIPLE_COINS
+                                    if self.config.COIN_SELECTION_MODE == "multiple"
+                                    else [self.config.SINGLE_COIN])
+                    
+                    # Ensure we have the trading pair in the instance ID
+                    if not inst_id or inst_id not in trading_pairs:
+                        self.logger.warning(f"Received data for unknown trading pair: {inst_id}")
+                        continue
+                    
+                    # Process candle data
+                    if channel.startswith('candle') and self.callbacks.get('candle'):
                         candle_data = data['data']
-
+                        
                         # Validate candle data structure
-                        if not candle_data or not isinstance(
-                                candle_data, list):
-                            self.logger.error(
-                                f"Invalid candle data structure: {candle_data}"
-                            )
+                        if not candle_data or not isinstance(candle_data, list):
+                            self.logger.error(f"Invalid candle data structure: {candle_data}")
                             continue
-
+                        
                         try:
-                            # Process each candle
-                            for candle in candle_data:
-                                if len(
-                                        candle
-                                ) >= 8:  # Verify we have all required fields
-                                    # Only log if it's a new candle or confirmed
-                                    current_ts = int(float(candle[0]))
-                                    is_confirmed = bool(int(float(candle[8]))) if len(candle) > 8 else False
-
-                                    if current_ts > self.last_candle_ts or is_confirmed:
-                                        self.last_candle_ts = current_ts
-                                        self.logger.debug(
-                                            f"Processing candle update for {self.config.TRADING_PAIR}"
-                                        )
-
-                                        # Execute callback with validated data, passing the trading pair
-                                        await self.callbacks['candle'](candle_data, inst_id)
-                                        self.logger.debug(
-                                            f"Successfully processed candle update for {inst_id}"
-                                        )
-                                else:
-                                    self.logger.warning(
-                                        f"Incomplete candle data received: {candle}"
-                                    )
-
+                            # Pass the trading pair along with the data to the callback
+                            await self.callbacks['candle'](candle_data, inst_id)
+                            self.logger.debug(f"Successfully processed candle update for {inst_id}")
                         except Exception as e:
-                            self.logger.error(
-                                f"Error processing candle data for {self.config.TRADING_PAIR}: {str(e)}"
-                            )
+                            self.logger.error(f"Error processing candle data for {inst_id}: {str(e)}")
                             continue
-
+                        
             except (websockets.exceptions.ConnectionClosed,
                     websockets.exceptions.ConnectionClosedError,
                     websockets.exceptions.ConnectionClosedOK) as e:
-                self.logger.error(
-                    f"Connection closed for {self.config.TRADING_PAIR}: {str(e)}"
-                )
+                self.logger.error(f"Connection closed: {str(e)}")
                 self.connected = False
                 await self.reconnect()
             except json.JSONDecodeError as e:
-                self.logger.error(
-                    f"JSON decode error for {self.config.TRADING_PAIR}: {str(e)}"
-                )
+                self.logger.error(f"JSON decode error: {str(e)}")
                 continue
             except Exception as e:
-                self.logger.error(
-                    f"Message handling error for {self.config.TRADING_PAIR}: {str(e)}"
-                )
+                self.logger.error(f"Message handling error: {str(e)}")
                 self.connected = False
                 await self.reconnect()
 

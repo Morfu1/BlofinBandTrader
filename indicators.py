@@ -25,36 +25,38 @@ class Indicators:
         self.current_symbol: Optional[str] = None
 
     def reset_state(self) -> None:
-        """Reset the indicator state"""
-        self.historical_data.clear()
+        """Reset the indicator state but keep historical data"""
+        # Don't clear historical data completely, just reset current symbol
         self.current_symbol = None
-        self.logger.info("Indicator state reset")
+        self.logger.info("Indicator state reset (keeping historical data)")
 
     def initialize_historical_data(self, symbol: str, historical_prices: pd.Series) -> None:
         """Initialize historical data for a symbol"""
         try:
             if self.current_symbol is not None and symbol != self.current_symbol:
                 self.logger.info(f"Switching from {self.current_symbol} to {symbol}")
-                self.reset_state()
-
+                
+            # Set current symbol without resetting state
+            self.current_symbol = symbol
+            
             if isinstance(historical_prices, pd.Series):
                 if not isinstance(historical_prices.index, pd.DatetimeIndex):
                     historical_prices.index = pd.to_datetime(historical_prices.index)
                 df = pd.DataFrame({'close': historical_prices})
             else:
                 df = pd.DataFrame({'close': historical_prices})
-                if not isinstance(df.index, pd.DatetimeIndex):
-                    df.index = pd.to_datetime(df.index)
-
+                
+            if not isinstance(df.index, pd.DatetimeIndex):
+                df.index = pd.to_datetime(df.index)
+                
             df = df.sort_index()
             self.historical_data[symbol] = df
-            self.current_symbol = symbol
 
             self.logger.info(
                 f"\nInitialized Historical Data for {symbol}:\n"
                 f"Data points: {len(df)}\n"
                 f"Latest price: {df['close'].iloc[-1]:.6f}")
-
+            
             # Calculate and log initial MA values
             if len(df) >= max(self.sma_period, self.ema_period):
                 sma, ema = self.calculate_bands(symbol)
@@ -62,7 +64,6 @@ class Indicators:
                     f"Initial MA Values:\n"
                     f"SMA: {sma.iloc[-1]:.6f}\n"
                     f"EMA: {ema.iloc[-1]:.6f}")
-
         except Exception as e:
             self.logger.error(f"Error initializing historical data: {str(e)}")
             raise
@@ -70,39 +71,55 @@ class Indicators:
     def update_real_time_data(self, symbol: str, timestamp: int, close_price: float) -> bool:
         """Update historical data with real-time market data"""
         try:
-            self.validate_symbol(symbol)
-            if not isinstance(timestamp, (int, float)) or not isinstance(close_price, (int, float)):
-                raise ValueError("Invalid timestamp or close price format")
-
+            # Check if we already have this symbol's data from initialization
+            if symbol not in self.historical_data or self.historical_data[symbol].empty:
+                self.logger.warning(f"Creating new data series for {symbol}")
+                self.historical_data[symbol] = pd.DataFrame(columns=['close'])
+            
             dt = pd.to_datetime(timestamp, unit='ms')
-
+            
             if len(self.historical_data[symbol]) > 0:
                 last_timestamp = self.historical_data[symbol].index[-1]
-
+                
                 if dt == last_timestamp:
                     self.historical_data[symbol].loc[dt, 'close'] = close_price
-                    self.logger.debug(f"Updated existing candle at {dt} with price {close_price:.6f}")
+                    self.logger.debug(f"Updated existing candle at {dt} for {symbol} with price {close_price:.6f}")
                 else:
                     new_data = pd.DataFrame({'close': [close_price]}, index=[dt])
                     self.historical_data[symbol] = pd.concat([self.historical_data[symbol], new_data])
-                    self.logger.debug(f"Added new candle at {dt} with price {close_price:.6f}")
-
-                required_periods = max(self.sma_period, self.ema_period) + 10
-                if len(self.historical_data[symbol]) > required_periods:
-                    self.historical_data[symbol] = self.historical_data[symbol].tail(required_periods)
-
+                    self.logger.debug(f"Added new candle at {dt} for {symbol} with price {close_price:.6f}")
+            else:
+                # First data point for this symbol
+                new_data = pd.DataFrame({'close': [close_price]}, index=[dt])
+                self.historical_data[symbol] = new_data
+                self.logger.debug(f"Created first candle at {dt} for {symbol} with price {close_price:.6f}")
+            
+            # Temporarily set current symbol for this update
+            prev_symbol = self.current_symbol
+            self.current_symbol = symbol
+            
+            # Keep required periods for calculation
+            required_periods = max(self.sma_period, self.ema_period) + 10
+            if len(self.historical_data[symbol]) > required_periods:
+                self.historical_data[symbol] = self.historical_data[symbol].tail(required_periods)
+            
+            # Restore previous current symbol
+            self.current_symbol = prev_symbol
+            
             return True
-
+        
         except Exception as e:
-            self.logger.error(f"Error updating real-time data: {str(e)}")
+            self.logger.error(f"Error updating real-time data for {symbol}: {str(e)}")
             return False
 
     def validate_symbol(self, symbol: str) -> None:
         """Validate symbol data exists"""
-        if symbol != self.current_symbol:
-            raise ValueError(f"Symbol mismatch: {symbol} vs {self.current_symbol}")
         if symbol not in self.historical_data:
-            raise ValueError(f"No data for symbol {symbol}")
+            # Instead of raising an error, initialize empty data
+            self.logger.warning(f"No data for symbol {symbol}, initializing empty DataFrame")
+            self.historical_data[symbol] = pd.DataFrame(columns=['close'])
+            if self.current_symbol is None:
+                self.current_symbol = symbol
 
     @staticmethod
     def calculate_sma(data: pd.Series, period: int = 21) -> pd.Series:
