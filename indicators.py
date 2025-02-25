@@ -9,18 +9,22 @@ class Indicators:
     def __init__(self, sma_period: int = 21, ema_period: int = 34, sl_percentage: float = 1.0, test_config: Optional[Config] = None):
         """Initialize technical indicators with configurable periods"""
         self.logger = logging.getLogger(__name__)
-        self.logger.setLevel(logging.DEBUG)
-
+        
+        # Get config and set log level based on config
+        self.config = test_config if test_config is not None else config
+        
+        # Set logger level based on config (if available)
+        if hasattr(self.config, 'LOG_LEVEL'):
+            self.logger.setLevel(getattr(logging, self.config.LOG_LEVEL))
+        else:
+            self.logger.setLevel(logging.INFO)
+        
         if sma_period < 1 or ema_period < 1:
             raise ValueError("SMA and EMA periods must be positive integers")
-
+        
         self.sma_period = sma_period
         self.ema_period = ema_period
         self.sl_percentage = sl_percentage
-
-        # Use test configuration if provided, otherwise use global config
-        self.config = test_config if test_config is not None else config
-
         self.historical_data: Dict[str, pd.DataFrame] = {}
         self.current_symbol: Optional[str] = None
 
@@ -83,16 +87,25 @@ class Indicators:
                 
                 if dt == last_timestamp:
                     self.historical_data[symbol].loc[dt, 'close'] = close_price
-                    self.logger.debug(f"Updated existing candle at {dt} for {symbol} with price {close_price:.6f}")
+                    
+                    # Use DEBUG level for candle updates instead of INFO
+                    # Only log if LOG_CANDLE_UPDATES is enabled
+                    if hasattr(self.config, 'LOG_CANDLE_UPDATES') and self.config.LOG_CANDLE_UPDATES:
+                        self.logger.debug(f"Updated existing candle at {dt} for {symbol} with price {close_price:.6f}")
                 else:
                     new_data = pd.DataFrame({'close': [close_price]}, index=[dt])
                     self.historical_data[symbol] = pd.concat([self.historical_data[symbol], new_data])
-                    self.logger.debug(f"Added new candle at {dt} for {symbol} with price {close_price:.6f}")
+                    
+                    # Log new candles if enabled
+                    if hasattr(self.config, 'LOG_CANDLE_UPDATES') and self.config.LOG_CANDLE_UPDATES:
+                        self.logger.debug(f"Added new candle at {dt} for {symbol} with price {close_price:.6f}")
             else:
                 # First data point for this symbol
                 new_data = pd.DataFrame({'close': [close_price]}, index=[dt])
                 self.historical_data[symbol] = new_data
-                self.logger.debug(f"Created first candle at {dt} for {symbol} with price {close_price:.6f}")
+                
+                if hasattr(self.config, 'LOG_CANDLE_UPDATES') and self.config.LOG_CANDLE_UPDATES:
+                    self.logger.debug(f"Created first candle at {dt} for {symbol} with price {close_price:.6f}")
             
             # Temporarily set current symbol for this update
             prev_symbol = self.current_symbol
@@ -107,7 +120,6 @@ class Indicators:
             self.current_symbol = prev_symbol
             
             return True
-        
         except Exception as e:
             self.logger.error(f"Error updating real-time data for {symbol}: {str(e)}")
             return False

@@ -239,19 +239,19 @@ class TradingBot:
                     new_data = pd.DataFrame({k: [v] for k, v in current_candle.items() if k != 'ts'}, index=[dt])
                     self.historical_data[trading_pair] = new_data
                 
-                # Don't reload historical data, just update with the new candle
+                # Only log candle updates if explicitly enabled or if it's a confirmed candle
+                should_log = (
+                    self.config.LOG_CANDLE_UPDATES or 
+                    (current_candle['confirm'] and self.config.LOG_CONFIRMED_CANDLES_ONLY)
+                )
+                
+                # Update indicators
                 self.indicators.update_real_time_data(
                     trading_pair, 
                     current_candle['ts'], 
                     current_candle['close']
                 )
                 
-                # Get previous candle data
-                previous_candle = None
-                if len(self.historical_data[trading_pair]) > 1:  # Need at least 2 candles
-                    historical_df = self.historical_data[trading_pair]
-                    previous_candle = historical_df[historical_df.index < dt].iloc[-1]
-
                 # Calculate indicators
                 sma, ema = self.indicators.calculate_bands(trading_pair, current_candle['close'])
 
@@ -275,7 +275,6 @@ class TradingBot:
                     # Check for signals only if we don't have a position
                     is_valid_signal = False
                     signal_type = ""
-                    signal_status = "⚪ NO NEW SIGNALS"
 
                     if not has_position and current_candle['confirm']:
                         is_valid_signal, signal_type = self.indicators.is_price_outside_bands(
@@ -283,29 +282,45 @@ class TradingBot:
                             current_candle['close'],
                             current_candle['open']
                         )
-                        if is_valid_signal:
-                            signal_status = f"🔔 {signal_type.upper()}"
-
-                    # Print formatted status update with clear sections
-                    self.logger.info(
-                        f"\n{'=' * 100}\n"
-                        f"🪙 {trading_pair} Status Update - {candle_time}\n"
-                        f"{'=' * 100}\n"
-                        f"📊 Current Price Action:\n"
-                        f"   Open: {current_candle['open']:.6f}\n"
-                        f"   Close: {current_candle['close']:.6f}\n"
-                        f"   Volume: {current_candle['vol']:.2f}\n"
-                        f"   Candle Confirmed: {'✅' if current_candle['confirm'] else '❌'}\n\n"
-                        f"📈 Indicator Analysis:\n"
-                        f"   SMA: {current_sma:.6f}\n"
-                        f"   EMA: {current_ema:.6f}\n"
-                        f"   Band High: {band_high:.6f}\n"
-                        f"   Band Low: {band_low:.6f}\n\n"
-                        f"🔍 Position Analysis:\n"
-                        f"   Active Position: {position_type}\n"
-                        f"   Signal Analysis: {signal_status if not has_position else '🔒 Position Open - Not Scanning'}\n"
-                        f"   {'🎯 Valid Entry Point!' if is_valid_signal and not has_position else '📈 Managing Position...' if has_position else '⏳ Waiting for Setup...'}\n"
-                        f"{'=' * 100}")
+                    
+                    # Only log if it's a signal, confirmed candle, or logging is explicitly enabled
+                    if is_valid_signal or should_log:
+                        signal_status = f"🔔 {signal_type.upper()}" if is_valid_signal else "⚪ NO NEW SIGNALS"
+                        
+                        # Determine price position relative to bands
+                        price_position = ""
+                        if current_candle['close'] > band_high:
+                            price_position = "📈 ABOVE BANDS"
+                        elif current_candle['close'] < band_low:
+                            price_position = "📉 BELOW BANDS"
+                        else:
+                            price_position = "⚖️ BETWEEN BANDS"
+                        
+                        # Print formatted status update with clear sections
+                        self.logger.info(
+                            f"\n{'=' * 50}\n"
+                            f"🪙 {trading_pair} - {candle_time} - {'✅ CONFIRMED' if current_candle['confirm'] else '⏳ UPDATING'}\n"
+                            f"{'=' * 50}\n"
+                            f"💰 Price Action: Open: {current_candle['open']:.6f}, Close: {current_candle['close']:.6f} ({(current_candle['close']-current_candle['open'])/current_candle['open']*100:+.2f}%)\n"
+                            f"📊 Bands: High: {band_high:.6f}, Low: {band_low:.6f}\n"
+                            f"🔍 Status: {price_position}\n"
+                            f"📈 Position: {position_type}\n"
+                            f"🔔 Signal: {signal_status}\n"
+                            f"{'=' * 50}"
+                        )
+                        
+                        # Only log detailed analysis if in DEBUG mode
+                        if self.logger.level <= logging.DEBUG:
+                            self.logger.debug(
+                                f"\n📈 Detailed Analysis for {trading_pair}:\n"
+                                f" Open: {current_candle['open']:.6f}\n"
+                                f" Close: {current_candle['close']:.6f}\n"
+                                f" Volume: {current_candle['vol']:.2f}\n"
+                                f" SMA: {current_sma:.6f}\n"
+                                f" EMA: {current_ema:.6f}\n"
+                                f" Band High: {band_high:.6f}\n"
+                                f" Band Low: {band_low:.6f}"
+                            )
 
                     # Process signal if valid and candle is confirmed
                     if is_valid_signal and current_candle['confirm'] and not has_position:

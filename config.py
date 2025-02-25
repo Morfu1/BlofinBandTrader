@@ -42,7 +42,7 @@ class Config:
     TRADING_PAIR: str = "WIF-USDT"  # Will be set based on selection mode
 
     # Trading Parameters
-    TIMEFRAME: Literal["1m", "3m", "5m", "15m", "30m", "1H", "4H", "1D"] = "5m"
+    TIMEFRAME: Literal["1m", "3m", "5m", "15m", "30m", "1H", "4H", "1D"] = "1H"
     POSITION_SIZE: float = 100.0  # Margin size in USD
     LEVERAGE: int = 3
     POSITION_TYPE: Literal["isolated", "cross"] = "isolated"
@@ -74,6 +74,13 @@ class Config:
     REST_URL: str = "https://demo-trading-openapi.blofin.com"
     WS_PUBLIC_URL: str = "wss://demo-trading-openapi.blofin.com/ws/public"
     WS_PRIVATE_URL: str = "wss://demo-trading-openapi.blofin.com/ws/private"
+    
+    # Logging Configuration
+    LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
+    LOG_CANDLE_UPDATES: bool = False  # Whether to log every candle update
+    LOG_CONFIRMED_CANDLES_ONLY: bool = True  # Only log confirmed candles
+    LOG_DETAILED_POSITION_UPDATES: bool = False  # Detailed position state logs
+    LOG_FORMAT: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
     def __post_init__(self):
         # Load API credentials from environment variables
@@ -96,6 +103,12 @@ class Config:
             # Will be populated later by MarketScanner
             self.MULTIPLE_COINS = []
             self.TRADING_PAIR = None
+            
+        # Configure logging based on settings
+        logging.basicConfig(
+            level=getattr(logging, self.LOG_LEVEL),
+            format=self.LOG_FORMAT
+        )
 
         # Log final configuration
         logger.info(
@@ -104,6 +117,9 @@ class Config:
             f"Selection Mode: {self.COIN_SELECTION_MODE}\n"
             f"Active Coins: {self.MULTIPLE_COINS}\n"
             f"Timeframe: {self.TIMEFRAME}\n"
+            f"Logging Level: {self.LOG_LEVEL}\n"
+            f"Log Candle Updates: {self.LOG_CANDLE_UPDATES}\n"
+            f"Log Confirmed Candles Only: {self.LOG_CONFIRMED_CANDLES_ONLY}\n"
             f"========================================")
 
 
