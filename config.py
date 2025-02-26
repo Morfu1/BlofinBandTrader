@@ -35,7 +35,7 @@ class Config:
         "top_volume"] = "multiple"  # Default selection mode
     SINGLE_COIN: str = "AR-USDT"  # Default trading pair for single mode
     MULTIPLE_COINS: List[str] = field(
-        default_factory=lambda: ["AR-USDT", "NEAR-USDT", "BRETT-USDT", "POPCAT-USDT", "WIF-USDT"])  # List of trading pairs
+        default_factory=lambda: ["AR-USDT", "NEAR-USDT", "BRETT-USDT", "POPCAT-USDT", "WIF-USDT", "TIA-USDT", "SOL-USDT", "OP-USDT", "XRP-USDT", "LINK-USDT", "ADA-USDT", "DOGE-USDT", "AVAX-USDT", "WLD-USDT", "PEPE-USDT", "INJ-USDT", "MKR-USDT", "JASMY-USDT", "PEOPLE-USDT", "TON-USDT", "KAS-USDT"])  # List of trading pairs
     TOP_VOLUME_COUNT: int = 10  # Number of top volume pairs to track
 
     # For backward compatibility

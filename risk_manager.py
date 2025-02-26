@@ -68,19 +68,18 @@ class RiskManager:
             raise
 
     async def get_historical_candles(self) -> Optional[List[Dict]]:
-        """Fetch last N candles for stop loss calculation"""
+        """Fetch last N candles for stop loss calculation using the configured timeframe"""
         try:
             url = f"{self.config.REST_URL}/api/v1/market/candles"
             params = {
                 "instId": self.config.TRADING_PAIR,
-                "bar": "5m",  # 5-minute candles
+                "bar": self.config.TIMEFRAME,  # Use configured timeframe instead of hardcoded "5m"
                 "limit": str(self.config.CANDLE_LOOKBACK)
             }
-
+            
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, params=params) as response:
                     data = await response.json()
-
                     if data['code'] == '0' and data['data']:
                         # Format: [timestamp, open, high, low, close, volume, ...]
                         candles = data['data']
@@ -92,10 +91,14 @@ class RiskManager:
                             }
                             for candle in candles
                         ]
+                        
+                        self.logger.info(
+                            f"Fetched {len(formatted_candles)} candles on {self.config.TIMEFRAME} timeframe for SL calculation"
+                        )
+                        
                         return formatted_candles
                     else:
                         raise Exception(f"Failed to fetch candles: {data.get('msg', 'Unknown error')}")
-
         except Exception as e:
             self.logger.error(f"Error fetching historical candles: {str(e)}")
             return None
