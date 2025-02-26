@@ -194,35 +194,50 @@ class RiskManager:
             raise
 
     def calculate_take_profit(self, entry_price: float, stop_loss: float, position_type: str) -> float:
-        """Calculate take profit based on configured percentage from entry price"""
+        """Calculate take profit based on configured percentage from entry price using ticks"""
         try:
             # Convert inputs to Decimal for precise calculation
             entry_price_decimal = Decimal(str(entry_price))
-            tp_percentage = Decimal(str(self.config.TAKE_PROFIT_PERCENT)) / Decimal('100')  # Convert from percentage to decimal
-
-            # Calculate raw take profit price with exact precision
+            tp_percentage = Decimal(str(self.config.TAKE_PROFIT_PERCENT)) / Decimal('100')
+            
+            # Calculate the target price movement (as before)
             if position_type == "long":
-                tp_price = entry_price_decimal * (Decimal('1.0') + tp_percentage)
+                raw_tp_price = entry_price_decimal * (Decimal('1.0') + tp_percentage)
             else:  # short
-                tp_price = entry_price_decimal * (Decimal('1.0') - tp_percentage)
-
-            # Round to valid tick size using our helper method with position type
-            rounded_tp = self.round_to_tick(float(tp_price), position_type)
-
-            # Calculate reward percentage for logging
+                raw_tp_price = entry_price_decimal * (Decimal('1.0') - tp_percentage)
+            
+            # Calculate the number of ticks required to achieve the target percentage
+            price_movement = abs(raw_tp_price - entry_price_decimal)
+            ticks_needed = (price_movement / self.tick_size).quantize(Decimal('1'), rounding=ROUND_UP)
+            
+            # Calculate the tick-based TP price
+            if position_type == "long":
+                tick_based_tp = entry_price_decimal + (ticks_needed * self.tick_size)
+            else:  # short
+                tick_based_tp = entry_price_decimal - (ticks_needed * self.tick_size)
+            
+            # Round to valid tick size using our helper method
+            rounded_tp = self.round_to_tick(float(tick_based_tp), position_type)
+            
+            # Calculate actual reward percentage for logging
+            actual_tick_count = int(abs(float(rounded_tp) - float(entry_price_decimal)) / float(self.tick_size))
             reward_percentage = abs(float(rounded_tp) - float(entry_price_decimal)) / float(entry_price_decimal) * 100
-
+            
+            # Enhanced logging with tick information
             self.logger.info(
                 f"\nTake Profit Calculation:\n"
                 f"========================================\n"
                 f"Entry Price: ${float(entry_price_decimal):.6f}\n"
                 f"Position Type: {position_type}\n"
                 f"Target TP %: {float(tp_percentage) * 100:.2f}%\n"
-                f"Raw TP Price: ${float(tp_price):.6f}\n"
+                f"Raw TP Price: ${float(raw_tp_price):.6f}\n"
+                f"Tick Size: {float(self.tick_size):.8f}\n"
+                f"Ticks Needed: {int(ticks_needed)}\n"
+                f"Actual Ticks: {actual_tick_count}\n"
                 f"Actual Reward %: {reward_percentage:.2f}%\n"
                 f"Rounded TP Price: ${float(rounded_tp)}\n"
                 f"========================================")
-
+            
             return float(rounded_tp)
         except Exception as e:
             self.logger.error(f"Error calculating take profit: {str(e)}")
