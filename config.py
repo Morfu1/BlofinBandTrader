@@ -59,6 +59,7 @@ class Config:
     MAX_DRAWDOWN: float = 5.0
     TRAILING_STOP: float = 0.5
     RISK_REWARD_RATIO: float = 2.0
+    STOP_LOSS_BUFFER: float = 0.5  # Buffer percentage to avoid stop hunts (0.5%)
 
     # Exchange Limits
     MIN_SIZE: float = 0.1

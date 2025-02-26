@@ -144,32 +144,35 @@ class RiskManager:
         try:
             # Fetch historical candles if not already available
             candles = await self.get_historical_candles()
-
+            
             if not candles:
                 self.logger.error("Failed to fetch historical candle data")
                 raise ValueError("Failed to fetch historical candle data for SL calculation")
-
-            # Use only the last 10 candles for stop loss calculation
-            recent_candles = candles[-10:]
-
-            # Get extreme prices from last 10 candles
+            
+            # Use the configured candle lookback parameter
+            recent_candles = candles[-self.config.CANDLE_LOOKBACK:]
+            
+            # Get extreme prices from recent candles
             highest_wick = max(candle['high'] for candle in recent_candles)
             lowest_wick = min(candle['low'] for candle in recent_candles)
-
-            # Set stop loss based on position type and recent wicks
+            
+            # Convert buffer to decimal
+            buffer_percentage = Decimal(str(self.config.STOP_LOSS_BUFFER)) / Decimal('100')
+            
+            # Set stop loss based on position type and recent wicks with buffer
             if position_type == "long":
-                # For long positions, use the lowest wick from last 10 candles
-                stop_loss = Decimal(str(lowest_wick))
-            else:  # short
-                # For short positions, use the highest wick from last 10 candles
-                stop_loss = Decimal(str(highest_wick))
-
+                # For long positions, set SL slightly below the lowest wick
+                stop_loss = Decimal(str(lowest_wick)) * (Decimal('1') - buffer_percentage)
+            else: # short
+                # For short positions, set SL slightly above the highest wick
+                stop_loss = Decimal(str(highest_wick)) * (Decimal('1') + buffer_percentage)
+            
             # Round to valid tick size
             rounded_sl = self.round_to_tick(float(stop_loss))
-
+            
             # Calculate actual risk percentage for logging
             risk_percentage = abs(float(rounded_sl) - float(entry_price)) / float(entry_price) * 100
-
+            
             self.logger.info(
                 f"\nStop Loss Calculation:\n"
                 f"========================================\n"
@@ -178,14 +181,14 @@ class RiskManager:
                 f"Candles Used: {len(recent_candles)}\n"
                 f"Highest Wick: ${highest_wick:.6f}\n"
                 f"Lowest Wick: ${lowest_wick:.6f}\n"
+                f"Buffer Applied: {float(buffer_percentage) * 100:.2f}%\n"
                 f"Target Risk %: 1.00%\n"
                 f"Actual Risk %: {risk_percentage:.2f}%\n"
                 f"Raw SL Price: ${float(stop_loss):.6f}\n"
                 f"Rounded SL Price: ${float(rounded_sl):.6f}\n"
                 f"========================================")
-
+            
             return float(rounded_sl)
-
         except Exception as e:
             self.logger.error(f"Error calculating stop loss: {str(e)}")
             raise
