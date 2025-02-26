@@ -69,7 +69,8 @@ class Config:
     # Strategy Parameters
     SMA_PERIOD: int = 21
     EMA_PERIOD: int = 34
-    CANDLE_LOOKBACK: int = 10
+    CANDLE_LOOKBACK: int = 10  # For stop loss calculation based on recent wicks
+    HISTORICAL_CANDLE_LIMIT: int = 300  # For loading initial historical data
 
     # API Endpoints
     REST_URL: str = "https://demo-trading-openapi.blofin.com"

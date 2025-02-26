@@ -581,7 +581,7 @@ class TradingBot:
         params = {
             "instId": self.config.TRADING_PAIR,
             "bar": self.config.TIMEFRAME,
-            "limit": "300"  # Increase from 100 to 300 for more history
+            "limit": str(self.config.HISTORICAL_CANDLE_LIMIT)  # Use config parameter instead of hardcoded value
         }
         
         self.logger.info(
