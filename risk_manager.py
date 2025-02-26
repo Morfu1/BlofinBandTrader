@@ -1,5 +1,5 @@
 from typing import Dict, Optional, Union, List, Tuple
-from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal, ROUND_DOWN, ROUND_UP
 import logging
 import aiohttp
 from utils import Utils  # For API signing
@@ -103,27 +103,38 @@ class RiskManager:
             self.logger.error(f"Error fetching historical candles: {str(e)}")
             return None
 
-    def round_to_tick(self, price: float) -> str:
-        """Round price to valid tick size"""
+    def round_to_tick(self, price: float, position_type: str = None) -> str:
+        """Round price to valid tick size with position-aware rounding"""
         if not self.tick_size:
             raise ValueError("Tick size not initialized")
-
+        
         # Convert price to Decimal for precise calculation
         price_decimal = Decimal(str(price))
         tick_size = self.tick_size
-
+        
         # Get the tick size precision
         tick_precision = abs(tick_size.as_tuple().exponent)
-
+        
+        # Use position-aware rounding
+        if position_type == "long":
+            # For long positions, round UP for take profits to ensure we get at least the desired percentage
+            rounding_mode = ROUND_UP
+        elif position_type == "short":
+            # For short positions, round DOWN for take profits to ensure we get at least the desired percentage
+            rounding_mode = ROUND_DOWN
+        else:
+            # Default to ROUND_DOWN when position type not specified
+            rounding_mode = ROUND_DOWN
+        
         # Calculate number of ticks
-        ticks = (price_decimal / tick_size).quantize(Decimal('1.'), rounding=ROUND_DOWN)
-
+        ticks = (price_decimal / tick_size).quantize(Decimal('1.'), rounding=rounding_mode)
+        
         # Calculate final price
         rounded_price = (ticks * tick_size).quantize(
             tick_size,
-            rounding=ROUND_DOWN
+            rounding=rounding_mode
         )
-
+        
         # Format with exact precision needed
         # Use string formatting to ensure we keep trailing zeros
         return f"{rounded_price:0.{tick_precision}f}"
@@ -192,8 +203,8 @@ class RiskManager:
             else:  # short
                 tp_price = entry_price_decimal * (Decimal('1.0') - tp_percentage)
 
-            # Round to valid tick size using our helper method
-            rounded_tp = self.round_to_tick(float(tp_price))
+            # Round to valid tick size using our helper method with position type
+            rounded_tp = self.round_to_tick(float(tp_price), position_type)
 
             # Calculate reward percentage for logging
             reward_percentage = abs(float(rounded_tp) - float(entry_price_decimal)) / float(entry_price_decimal) * 100
