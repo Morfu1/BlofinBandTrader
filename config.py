@@ -42,7 +42,7 @@ class Config:
     TRADING_PAIR: str = "WIF-USDT"  # Will be set based on selection mode
 
     # Trading Parameters
-    TIMEFRAME: Literal["1m", "3m", "5m", "15m", "30m", "1H", "4H", "1D"] = "1H"
+    TIMEFRAME: Literal["1m", "3m", "5m", "15m", "30m", "1H", "4H", "1D"] = "15m"
     POSITION_SIZE: float = 100.0  # Margin size in USD
     LEVERAGE: int = 3
     POSITION_TYPE: Literal["isolated", "cross"] = "isolated"
@@ -54,7 +54,7 @@ class Config:
     HIGH_VOLATILITY_THRESHOLD: float = 2.5
 
     # Risk Management Parameters
-    TAKE_PROFIT_PERCENT: float = 2.0
+    TAKE_PROFIT_PERCENT: float = 4.0
     SL_PERCENTAGE: float = 1.0
     MAX_DRAWDOWN: float = 5.0
     TRAILING_STOP: float = 0.5

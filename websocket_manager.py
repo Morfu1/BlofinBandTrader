@@ -9,6 +9,7 @@ import time
 from datetime import datetime
 from uuid import uuid4
 from typing import Callable, Dict, Optional
+import random
 
 class WebSocketManager:
 
@@ -153,23 +154,76 @@ class WebSocketManager:
                 await self.reconnect()
 
     async def reconnect(self):
-        """Reconnect WebSocket on connection loss"""
-        if self.reconnect_attempts >= self.MAX_RECONNECT_ATTEMPTS:
-            self.logger.error("Maximum reconnection attempts reached")
-            return
-
-        self.reconnect_attempts += 1
-        wait_time = min(5 * self.reconnect_attempts,
-                        30)  # Exponential backoff with 30s max
-        self.logger.info(
-            f"Attempting to reconnect (attempt {self.reconnect_attempts})...")
-
-        try:
-            await asyncio.sleep(wait_time)
-            await self.connect()
-        except Exception as e:
-            self.logger.error(f"Reconnection failed: {str(e)}")
-            self.connected = False
+        """Reconnect WebSocket on connection loss with enhanced error handling and recovery"""
+        while True:  # Keep trying to reconnect indefinitely
+            try:
+                if self.reconnect_attempts >= self.MAX_RECONNECT_ATTEMPTS:
+                    self.logger.warning(
+                        f"Maximum reconnection attempts ({self.MAX_RECONNECT_ATTEMPTS}) reached. "
+                        "Entering extended recovery mode..."
+                    )
+                    # Extended recovery mode
+                    await asyncio.sleep(60)  # 1 minute cooldown
+                    self.reconnect_attempts = 0
+                    self.logger.info("Reset reconnection attempts counter after cooldown")
+                
+                self.reconnect_attempts += 1
+                
+                # Calculate backoff time with jitter to prevent thundering herd
+                base_wait = min(5 * self.reconnect_attempts, 30)
+                jitter = random.uniform(0, 2)  # Add up to 2 seconds of random jitter
+                wait_time = base_wait + jitter
+                
+                self.logger.info(
+                    f"Attempting to reconnect (attempt {self.reconnect_attempts}/{self.MAX_RECONNECT_ATTEMPTS}) "
+                    f"after {wait_time:.2f}s delay..."
+                )
+                
+                # Wait before attempting reconnection
+                await asyncio.sleep(wait_time)
+                
+                # Close existing connections if any
+                if self.ws_public:
+                    await self.ws_public.close()
+                if self.ws_private:
+                    await self.ws_private.close()
+                
+                # Attempt to reconnect
+                await self.connect()
+                
+                # If connection successful, break the loop
+                if self.connected:
+                    self.logger.info("Reconnection successful!")
+                    self.reconnect_attempts = 0  # Reset counter on successful connection
+                    break
+                    
+            except websockets.exceptions.InvalidStatusCode as e:
+                self.logger.error(f"Invalid status code during reconnection: {e}")
+                self.connected = False
+                # Don't increment retry counter for authentication issues
+                continue
+                
+            except (websockets.exceptions.ConnectionClosed,
+                    websockets.exceptions.ConnectionClosedError,
+                    websockets.exceptions.ConnectionClosedOK) as e:
+                self.logger.error(f"Connection closed during reconnection attempt: {e}")
+                self.connected = False
+                continue
+                
+            except asyncio.CancelledError:
+                self.logger.warning("Reconnection attempt cancelled")
+                raise
+                
+            except Exception as e:
+                self.logger.error(
+                    f"Unexpected error during reconnection (attempt {self.reconnect_attempts}): {str(e)}"
+                )
+                self.connected = False
+                
+                # If this is a critical error, maybe we should break
+                if isinstance(e, (ConnectionRefusedError, OSError)):
+                    self.logger.critical("Critical connection error - manual intervention may be required")
+                    raise
 
     async def message_handler(self):
         """Handle incoming WebSocket messages"""
