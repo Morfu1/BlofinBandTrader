@@ -9,7 +9,8 @@ from config import Config
 from utils import Utils
 from websocket_manager import WebSocketManager
 from market_scanner import MarketScanner
-from risk_manager import RiskManager  # Add missing import
+from risk_manager import RiskManager
+from band_based_sl import BandBasedStopLossManager
 
 # Email notifications
 from reporting.trade_tracker import DailyTradeTracker, TradeRecord
@@ -25,6 +26,13 @@ class TradingBot:
                                    ema_period=self.config.EMA_PERIOD,
                                    sl_percentage=1.0)
         self.risk_manager = RiskManager(config=self.config)
+        
+        # Initialize band-based stop loss manager
+        self.band_sl_manager = BandBasedStopLossManager(
+            self.config,
+            self.risk_manager,
+            self.indicators
+        )
         self.market_scanner = MarketScanner(config=self.config)
         self.websocket_manager: Optional[WebSocketManager] = None
         self.candles_df = pd.DataFrame()
@@ -94,6 +102,9 @@ class TradingBot:
 
             # If a position was closed (changed from open to closed), log it to trade tracker
             if trading_pair in self.positions and not self.positions[trading_pair]['position_open']:
+                # Position was closed, clean up band-based stop tracking
+                self.band_sl_manager.remove_position_tracking(trading_pair)
+                
                 # Check if we previously had a position open for this pair
                 previous_position = position_data.get('previousPosition')
                 if previous_position and float(previous_position.get('positions', 0)) != 0:
@@ -306,6 +317,27 @@ class TradingBot:
                             current_candle['open']
                         )
                     
+                    # Process candle updates to check if SL needs to be adjusted
+                    if trading_pair in self.positions and self.positions[trading_pair]['position_open']:
+                        # Get position type
+                        position_type = "long" if self.positions[trading_pair]['long_position_open'] else "short"
+                        
+                        # Calculate current PnL percentage
+                        current_position = await self.risk_manager.get_current_positions()
+                        current_pnl_pct = float(current_position.get('unrealizedPnlRatio', 0)) * 100
+                        
+                        # Process candle update to potentially adjust stop loss
+                        # This checks if candle is confirmed and if we've hit profit threshold
+                        new_stop_loss = await self.band_sl_manager.process_candle_update(
+                            trading_pair, 
+                            current_candle,
+                            current_pnl_pct
+                        )
+                        
+                        # If stop loss needs to be updated, send the order to modify it
+                        if new_stop_loss is not None:
+                            await self.update_stop_loss(trading_pair, position_type, new_stop_loss)
+
                     # Only log if it's a signal, confirmed candle, or logging is explicitly enabled
                     if is_valid_signal or should_log:
                         signal_status = f"🔔 {signal_type.upper()}" if is_valid_signal else "⚪ NO NEW SIGNALS"
@@ -530,6 +562,14 @@ class TradingBot:
                 f"========================================")
 
             entry_order_response = await self.place_order(entry_order, "/api/v1/trade/order")
+
+            # Set up position tracking when a new position is opened
+            await self.band_sl_manager.initialize_position_tracking(
+                trading_pair,
+                position_type,
+                entry_price,
+                stop_loss
+            )
 
             if not entry_order_response or entry_order_response.get('code') != '0':
                 self.logger.error(
@@ -894,6 +934,35 @@ class TradingBot:
             pnl_percent=float(trade_data.get('pnlRatio', 0)) * 100,
             exit_reason=trade_data.get('closeReason', 'unknown')
         )
+
+    async def update_stop_loss(self, trading_pair, position_type, new_stop_loss):
+        """Update the stop loss for an existing position"""
+        try:
+            # Get current position details
+            current_position = await self.risk_manager.get_current_positions()
+            
+            # Format order payload
+            update_order = {
+                "instId": trading_pair,
+                "slTriggerPrice": str(new_stop_loss),
+                "slOrderPrice": "-1",  # Market order for stop loss
+                "slTriggerPxType": "mark"  # Use mark price for trigger
+            }
+            
+            # Send the order to update stop loss
+            endpoint = "/api/v1/trade/order-algo"
+            response = await self.place_order(update_order, endpoint)
+            
+            if response and response.get('code') == '0':
+                self.logger.info(f"Stop loss successfully updated to ${new_stop_loss:.8f} for {trading_pair}")
+                return True
+            else:
+                self.logger.error(f"Failed to update stop loss: {response}")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"Error updating stop loss: {str(e)}")
+            return False
 
 # Move main execution block outside the class
 if __name__ == "__main__":

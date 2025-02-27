@@ -66,6 +66,11 @@ class Config:
     RISK_REWARD_RATIO: float = 2.0
     STOP_LOSS_BUFFER: float = 0.2  # Buffer percentage to avoid stop hunts (0.2%)
 
+    # Band-Based Stop Loss Configuration
+    BAND_SL_ENABLED: bool = True
+    BAND_SL_ACTIVATION_PROFIT: float = 2.0  # Minimum profit % to activate band-based stop loss
+    BAND_SL_BUFFER: float = 0.2             # Buffer percentage to add to bands
+
     # Exchange Limits
     MIN_SIZE: float = 0.1
     MAX_SIZE: float = 1000.0
