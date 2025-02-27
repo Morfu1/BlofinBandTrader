@@ -1,7 +1,17 @@
+import websockets
+import packaging.version
+
+# Detect WebSockets version for compatibility
+try:
+    WEBSOCKETS_VERSION = packaging.version.parse(websockets.__version__)
+    IS_WEBSOCKETS_GTE_15 = WEBSOCKETS_VERSION >= packaging.version.parse("15.0")
+except (AttributeError, ValueError):
+    # Default to assuming newer version if detection fails
+    IS_WEBSOCKETS_GTE_15 = True
+
 import json
 import logging
 import asyncio
-import websockets
 import hmac
 import hashlib
 import base64
@@ -69,15 +79,20 @@ class WebSocketManager:
             self.logger.info("Connecting to public WebSocket...")
             self.ws_public = await websockets.connect(
                 self.config.WS_PUBLIC_URL,
-                ping_interval=15,  # Reduced ping interval
-                ping_timeout=10  # Shorter ping timeout
+                ping_interval=None,  # Disable automatic pings, we'll handle it
+                ping_timeout=20,     # Increased timeout
+                close_timeout=10     # Add explicit close timeout
             )
             self.logger.info("Connected to public WebSocket")
 
             # Connect to private WebSocket and authenticate
             self.logger.info("Connecting to private WebSocket...")
             self.ws_private = await websockets.connect(
-                self.config.WS_PRIVATE_URL, ping_interval=15, ping_timeout=10)
+                self.config.WS_PRIVATE_URL,
+                ping_interval=None,  # Disable automatic pings, we'll handle it
+                ping_timeout=20,     # Increased timeout
+                close_timeout=10     # Add explicit close timeout
+            )
             auth_payload = await self.generate_auth_payload()
             await self.ws_private.send(json.dumps(auth_payload))
 
@@ -97,35 +112,61 @@ class WebSocketManager:
             await self.reconnect()
 
     async def subscribe_channels(self):
-        """Subscribe to required WebSocket channels"""
+        """Subscribe to required WebSocket channels with improved efficiency"""
         try:
             # Get all trading pairs from config
-            trading_pairs = (self.config.MULTIPLE_COINS
-                             if self.config.COIN_SELECTION_MODE == "multiple"
-                             else [self.config.SINGLE_COIN])
+            trading_pairs = (
+                self.config.MULTIPLE_COINS
+                if self.config.COIN_SELECTION_MODE == "multiple"
+                else [self.config.SINGLE_COIN]
+            )
             
-            self.logger.info(f"Subscribing to channels for pairs: {trading_pairs}")
+            self.logger.info(f"Subscribing to channels for {len(trading_pairs)} pairs")
             
-            # Subscribe to candlestick channel for each trading pair
-            for pair in trading_pairs:
-                candle_sub = {
-                    "op": "subscribe",
-                    "args": [{
-                        "channel": f"candle{self.config.TIMEFRAME}",
-                        "instId": pair
-                    }]
-                }
+            # Batch subscriptions into groups of 5 to avoid overwhelming the connection
+            batch_size = 5
+            for i in range(0, len(trading_pairs), batch_size):
+                batch = trading_pairs[i:i+batch_size]
+                subscription_tasks = []
                 
-                self.logger.info(f"Subscribing to candlestick channel for {pair} with timeframe {self.config.TIMEFRAME}")
-                await self.ws_public.send(json.dumps(candle_sub))
+                for pair in batch:
+                    candle_sub = {
+                        "op": "subscribe",
+                        "args": [{
+                            "channel": f"candle{self.config.TIMEFRAME}",
+                            "instId": pair
+                        }]
+                    }
+                    self.logger.info(f"Subscribing to candlestick channel for {pair}")
+                    subscription_tasks.append(self.ws_public.send(json.dumps(candle_sub)))
                 
-                # Add a small delay between subscriptions to ensure proper order
-                await asyncio.sleep(0.5)
+                # Send batch of subscriptions in parallel
+                await asyncio.gather(*subscription_tasks)
+                
+                # Small delay between batches
+                await asyncio.sleep(1)
+                
+            # Wait for subscription responses (with timeout protection)
+            response_count = 0
+            expected_responses = len(trading_pairs)
             
-            # Wait for all subscription responses
-            for _ in trading_pairs:
-                response = await self.ws_public.recv()
-                self.logger.info(f"Subscription response received: {response}")
+            # Set a timeout for receiving all responses
+            start_time = time.time()
+            timeout = 30  # 30 seconds timeout
+            
+            while response_count < expected_responses and (time.time() - start_time < timeout):
+                try:
+                    response = await asyncio.wait_for(self.ws_public.recv(), timeout=5)
+                    data = json.loads(response)
+                    if 'event' in data and data['event'] == 'subscribe':
+                        response_count += 1
+                        self.logger.debug(f"Subscription response {response_count}/{expected_responses}")
+                
+                except asyncio.TimeoutError:
+                    self.logger.warning("Timeout waiting for subscription response")
+                    break
+            
+            self.logger.info(f"Completed {response_count}/{expected_responses} subscriptions")
             
         except Exception as e:
             self.logger.error(f"Subscription error: {str(e)}")
@@ -136,42 +177,45 @@ class WebSocketManager:
         """Send heartbeat to keep connection alive"""
         while True:
             try:
-                if self.connected:
-                    if time.time(
-                    ) - self.last_ping_time > 15:  # Reduced interval to 15 seconds
-                        if self.ws_public and self.ws_private:
-                            await self.ws_public.ping()
-                            await self.ws_private.ping()
-                            self.last_ping_time = time.time()
-                            self.logger.debug("Heartbeat sent successfully")
-                    await asyncio.sleep(5)  # More frequent checks
-                else:
-                    await self.reconnect()
+                if self.connected and self.ws_public and self.ws_private:
+                    # Use a more robust connection check approach
+                    try:
+                        # First try to send a ping to check if connections are alive
+                        await asyncio.wait_for(self.ws_public.ping(), timeout=2)
+                        await asyncio.wait_for(self.ws_private.ping(), timeout=2)
+                        self.last_ping_time = time.time()
+                        self.logger.debug("Heartbeat sent successfully")
+                    except (asyncio.TimeoutError, ConnectionError, Exception) as e:
+                        self.logger.warning(f"Connection issue detected during heartbeat: {str(e)}")
+                        self.connected = False
+                        await self.reconnect()
+                elif not self.connected:
                     await asyncio.sleep(5)
+                
+                await asyncio.sleep(5)
             except Exception as e:
                 self.logger.error(f"Heartbeat error: {str(e)}")
                 self.connected = False
                 await self.reconnect()
 
     async def reconnect(self):
-        """Reconnect WebSocket on connection loss with enhanced error handling and recovery"""
-        while True:  # Keep trying to reconnect indefinitely
+        """Reconnect WebSocket with enhanced error handling"""
+        while True:
             try:
                 if self.reconnect_attempts >= self.MAX_RECONNECT_ATTEMPTS:
                     self.logger.warning(
                         f"Maximum reconnection attempts ({self.MAX_RECONNECT_ATTEMPTS}) reached. "
                         "Entering extended recovery mode..."
                     )
-                    # Extended recovery mode
                     await asyncio.sleep(60)  # 1 minute cooldown
                     self.reconnect_attempts = 0
                     self.logger.info("Reset reconnection attempts counter after cooldown")
                 
                 self.reconnect_attempts += 1
                 
-                # Calculate backoff time with jitter to prevent thundering herd
+                # Calculate backoff time with jitter
                 base_wait = min(5 * self.reconnect_attempts, 30)
-                jitter = random.uniform(0, 2)  # Add up to 2 seconds of random jitter
+                jitter = random.uniform(0, 2)
                 wait_time = base_wait + jitter
                 
                 self.logger.info(
@@ -182,11 +226,8 @@ class WebSocketManager:
                 # Wait before attempting reconnection
                 await asyncio.sleep(wait_time)
                 
-                # Close existing connections if any
-                if self.ws_public:
-                    await self.ws_public.close()
-                if self.ws_private:
-                    await self.ws_private.close()
+                # Properly close existing connections if any
+                await self._safe_close_connections()
                 
                 # Attempt to reconnect
                 await self.connect()
@@ -194,36 +235,33 @@ class WebSocketManager:
                 # If connection successful, break the loop
                 if self.connected:
                     self.logger.info("Reconnection successful!")
-                    self.reconnect_attempts = 0  # Reset counter on successful connection
+                    self.reconnect_attempts = 0
                     break
-                    
-            except websockets.exceptions.InvalidStatusCode as e:
-                self.logger.error(f"Invalid status code during reconnection: {e}")
-                self.connected = False
-                # Don't increment retry counter for authentication issues
-                continue
-                
-            except (websockets.exceptions.ConnectionClosed,
-                    websockets.exceptions.ConnectionClosedError,
-                    websockets.exceptions.ConnectionClosedOK) as e:
-                self.logger.error(f"Connection closed during reconnection attempt: {e}")
-                self.connected = False
-                continue
-                
-            except asyncio.CancelledError:
-                self.logger.warning("Reconnection attempt cancelled")
-                raise
                 
             except Exception as e:
-                self.logger.error(
-                    f"Unexpected error during reconnection (attempt {self.reconnect_attempts}): {str(e)}"
-                )
+                self.logger.error(f"Unexpected error during reconnection: {str(e)}")
                 self.connected = False
-                
-                # If this is a critical error, maybe we should break
-                if isinstance(e, (ConnectionRefusedError, OSError)):
-                    self.logger.critical("Critical connection error - manual intervention may be required")
-                    raise
+                await asyncio.sleep(5)  # Brief pause before retrying
+
+    async def _safe_close_connections(self):
+        """Safely close existing WebSocket connections"""
+        try:
+            if self.ws_public:
+                try:
+                    await self.ws_public.close(code=1000, reason="Reconnecting")
+                except Exception as e:
+                    self.logger.warning(f"Error closing public websocket: {str(e)}")
+                self.ws_public = None
+            
+            if self.ws_private:
+                try:
+                    await self.ws_private.close(code=1000, reason="Reconnecting")
+                except Exception as e:
+                    self.logger.warning(f"Error closing private websocket: {str(e)}")
+                self.ws_private = None
+            
+        except Exception as e:
+            self.logger.error(f"Error closing connections: {str(e)}")
 
     async def message_handler(self):
         """Handle incoming WebSocket messages"""
@@ -232,9 +270,13 @@ class WebSocketManager:
                 if not self.connected:
                     await asyncio.sleep(1)
                     continue
-                
+
                 # Handle public messages
                 message = await self.ws_public.recv()
+                
+                # Update last message timestamp
+                self.last_message_time = time.time()
+                
                 if message == 'pong':
                     self.logger.debug("Received pong response")
                     continue
@@ -309,3 +351,35 @@ class WebSocketManager:
         if self.ws_private:
             await self.ws_private.close()
         self.logger.info("WebSocket connections closed")
+
+    async def connection_health_monitor(self):
+        """Monitor connection health and proactively reconnect if needed"""
+        while True:
+            try:
+                if self.connected:
+                    # Check connection health by trying to ping
+                    connection_alive = True
+                    try:
+                        if self.ws_public:
+                            await asyncio.wait_for(self.ws_public.ping(), timeout=2)
+                        if self.ws_private:
+                            await asyncio.wait_for(self.ws_private.ping(), timeout=2)
+                    except Exception:
+                        connection_alive = False
+                    
+                    if not connection_alive:
+                        self.logger.warning("Detected connection issue during health check")
+                        self.connected = False
+                        await self.reconnect()
+                    
+                    # Check last message time
+                    if hasattr(self, 'last_message_time') and time.time() - self.last_message_time > 60:
+                        self.logger.warning("No messages received in 60 seconds, reconnecting")
+                        self.connected = False
+                        await self.reconnect()
+            
+                await asyncio.sleep(15)
+            
+            except Exception as e:
+                self.logger.error(f"Health monitor error: {str(e)}")
+                await asyncio.sleep(15)

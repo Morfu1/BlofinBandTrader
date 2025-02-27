@@ -671,8 +671,11 @@ class TradingBot:
                     "WebSocket manager not properly initialized")
 
             # Start WebSocket handlers to receive real-time market data
-            await asyncio.gather(self.websocket_manager.heartbeat(),
-                                 self.websocket_manager.message_handler())
+            await asyncio.gather(
+                self.websocket_manager.heartbeat(),
+                self.websocket_manager.message_handler(),
+                self.websocket_manager.connection_health_monitor()  # Add this new task
+            )
 
         except Exception as e:
             self.logger.error(f"Bot runtime error: {str(e)}")
