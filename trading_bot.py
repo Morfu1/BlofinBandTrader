@@ -11,6 +11,12 @@ from websocket_manager import WebSocketManager
 from market_scanner import MarketScanner
 from risk_manager import RiskManager  # Add missing import
 
+# Email notifications
+from reporting.trade_tracker import DailyTradeTracker, TradeRecord
+from reporting.email_service import TradingReportEmailService
+from reporting.report_scheduler import ReportScheduler
+
+
 class TradingBot:
     def __init__(self):
         """Initialize bot components and configuration"""
@@ -33,6 +39,15 @@ class TradingBot:
         self.logger.info(
             f"Initialized with selection mode: {self.config.COIN_SELECTION_MODE}"
         )
+
+        # Initialize trade tracker for daily report
+        self.trade_tracker = DailyTradeTracker()
+        
+        # Initialize reporting services
+        self.report_service = TradingReportEmailService(self.trade_tracker)
+        
+        # Initialize scheduler
+        self.report_scheduler = ReportScheduler(self, self.report_service)
 
     async def handle_position_updates(self, position_data: Optional[Dict]) -> None:
         """Handle position updates and state management"""
@@ -76,6 +91,14 @@ class TradingBot:
                 self.positions[trading_pair]['long_position_open'] or 
                 self.positions[trading_pair]['short_position_open']
             )
+
+            # If a position was closed (changed from open to closed), log it to trade tracker
+            if trading_pair in self.positions and not self.positions[trading_pair]['position_open']:
+                # Check if we previously had a position open for this pair
+                previous_position = position_data.get('previousPosition')
+                if previous_position and float(previous_position.get('positions', 0)) != 0:
+                    # Position was closed, record it
+                    self.record_closed_trade(trading_pair, position_data, previous_position)
 
             self.logger.info(
                 f"\nPosition State Updated for {trading_pair}:\n"
@@ -662,6 +685,12 @@ class TradingBot:
         """Run the trading bot"""
         try:
             await self.initialize()
+            
+            # Start the report scheduler in a separate task
+            report_scheduler_task = asyncio.create_task(
+                self.report_scheduler.schedule_daily_report()
+            )
+            
             self.logger.info(
                 f"Trading bot started. Watching {self.current_trading_pairs} on {self.config.TIMEFRAME} timeframe"
             )
@@ -670,18 +699,134 @@ class TradingBot:
                 raise RuntimeError(
                     "WebSocket manager not properly initialized")
 
-            # Start WebSocket handlers to receive real-time market data
+            # Wait for all tasks
             await asyncio.gather(
                 self.websocket_manager.heartbeat(),
                 self.websocket_manager.message_handler(),
-                self.websocket_manager.connection_health_monitor()  # Add this new task
+                self.websocket_manager.connection_health_monitor(),
+                report_scheduler_task  # Add the report scheduler task
             )
-
+            
         except Exception as e:
             self.logger.error(f"Bot runtime error: {str(e)}")
         finally:
+            # Before shutting down, send a final report
+            if hasattr(self, 'trade_tracker') and hasattr(self, 'report_service'):
+                self.report_service.send_daily_report("Final report before bot shutdown.")
+            
             if self.websocket_manager:
                 await self.websocket_manager.close()
+
+    def record_closed_trade(self, trading_pair, position_data, previous_position):
+        try:
+            # Extract trade details from previous position
+            entry_time = datetime.fromtimestamp(float(previous_position.get('cTime', 0))/1000)
+            exit_time = datetime.now()
+            position_type = "long" if float(previous_position.get('positions', 0)) > 0 else "short"
+            entry_price = float(previous_position.get('averagePrice', 0))
+            exit_price = float(position_data.get('closePrice', 0))
+            take_profit = float(previous_position.get('tpTriggerPrice', 0))
+            stop_loss = float(previous_position.get('slTriggerPrice', 0))
+            size = abs(float(previous_position.get('positions', 0)))
+            pnl = float(position_data.get('realizedPnl', 0))
+            pnl_percent = pnl / (entry_price * size) * 100 if entry_price and size else 0
+            exit_reason = position_data.get('closeReason', 'unknown')
+            
+            # Create trade record
+            trade_record = TradeRecord(
+                trading_pair=trading_pair,
+                entry_time=entry_time,
+                exit_time=exit_time,
+                position_type=position_type,
+                entry_price=entry_price,
+                exit_price=exit_price,
+                take_profit=take_profit,
+                stop_loss=stop_loss,
+                size=size,
+                pnl=pnl,
+                pnl_percent=pnl_percent,
+                exit_reason=exit_reason
+            )
+            
+            # Add to trade tracker
+            self.trade_tracker.add_closed_trade(trade_record)
+            self.logger.info(f"Trade recorded for daily report: {trading_pair} {position_type} with P&L: ${pnl:.2f}")
+            
+        except Exception as e:
+            self.logger.error(f"Error recording closed trade: {str(e)}")
+
+    async def send_test_report(self):
+        """Send a test report with current data"""
+        try:
+            self.logger.info("Generating test trading report...")
+            
+            # If you don't have real trade data yet, create some sample trades
+            if len(self.trade_tracker.trades) == 0:
+                # Add some sample trades for testing
+                from datetime import datetime, timedelta
+                
+                # Create a few sample trades with different outcomes
+                sample_trades = [
+                    TradeRecord(
+                        trading_pair="BTC-USDT",
+                        entry_time=datetime.now() - timedelta(hours=5),
+                        exit_time=datetime.now() - timedelta(hours=4),
+                        position_type="long",
+                        entry_price=65432.50,
+                        exit_price=65932.75,
+                        take_profit=66000.00,
+                        stop_loss=65000.00,
+                        size=0.5,
+                        pnl=250.12,
+                        pnl_percent=0.76,
+                        exit_reason="take_profit"
+                    ),
+                    TradeRecord(
+                        trading_pair="ETH-USDT",
+                        entry_time=datetime.now() - timedelta(hours=3),
+                        exit_time=datetime.now() - timedelta(hours=2),
+                        position_type="short",
+                        entry_price=3456.75,
+                        exit_price=3356.50,
+                        take_profit=3356.00,
+                        stop_loss=3556.00,
+                        size=2.0,
+                        pnl=200.50,
+                        pnl_percent=2.89,
+                        exit_reason="take_profit"
+                    ),
+                    TradeRecord(
+                        trading_pair="SOL-USDT",
+                        entry_time=datetime.now() - timedelta(hours=2),
+                        exit_time=datetime.now() - timedelta(hours=1),
+                        position_type="long",
+                        entry_price=145.25,
+                        exit_price=142.75,
+                        take_profit=150.00,
+                        stop_loss=142.50,
+                        size=10.0,
+                        pnl=-25.00,
+                        pnl_percent=-1.72,
+                        exit_reason="stop_loss"
+                    )
+                ]
+                
+                # Add sample trades to the tracker
+                for trade in sample_trades:
+                    self.trade_tracker.add_closed_trade(trade)
+                
+                self.logger.info(f"Added {len(sample_trades)} sample trades for testing")
+            
+            # Send the report
+            success = self.report_service.send_daily_report("This is a test report generated at your request.")
+            
+            if success:
+                self.logger.info("Test report sent successfully")
+            else:
+                self.logger.error("Failed to send test report")
+                
+        except Exception as e:
+            self.logger.error(f"Error generating test report: {str(e)}")
 
 
 # Move main execution block outside the class

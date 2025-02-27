@@ -29,6 +29,11 @@ class Config:
     API_SECRET: str = ""
     API_PASSPHRASE: str = ""
 
+    # Email Configuration
+    GMAIL_USER: str = ""
+    GMAIL_PASSWORD: str = ""
+    NOTIFICATION_EMAIL: str = ""
+
     # Trading Pair Selection Configuration
     COIN_SELECTION_MODE: Literal[
         "single", "multiple",
@@ -89,6 +94,11 @@ class Config:
         self.API_KEY = os.getenv("BLOFIN_API_KEY", "")
         self.API_SECRET = os.getenv("BLOFIN_API_SECRET", "")
         self.API_PASSPHRASE = os.getenv("BLOFIN_PASSPHRASE", "")
+
+        # Load email credentials from environment variables
+        self.GMAIL_USER = os.getenv("GMAIL_USER", "")
+        self.GMAIL_PASSWORD = os.getenv("GMAIL_PASSWORD", "")
+        self.NOTIFICATION_EMAIL = os.getenv("NOTIFICATION_EMAIL", "")
 
         # Validate required credentials
         if not all([self.API_KEY, self.API_SECRET, self.API_PASSPHRASE]):

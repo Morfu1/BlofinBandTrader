@@ -11,4 +11,9 @@ dependencies = [
     "trafilatura>=2.0.0",
     "twilio>=9.4.5",
     "websockets>=15.0",
+    "matplotlib>=3.8.0",  # Used in reporting/report_generator.py
+    "packaging>=23.0",    # Used in websocket_manager.py
+    "cryptography>=42.0.0",  # Required for secure WebSocket connections
+    "aioschedule>=0.5.2",  # Used in reporting/report_scheduler.py
+    "pytz>=2024.1",      # Used for timezone handling in report_scheduler.py
 ]
