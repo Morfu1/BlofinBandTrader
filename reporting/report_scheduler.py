@@ -11,10 +11,16 @@ class ReportScheduler:
         self.report_service = report_service
         self.logger = logging.getLogger(__name__)
         
-        # Define market close time (e.g., 16:00 EST for US markets)
-        # Adjust this based on the trading hours of your market
-        self.market_close_time = time(16, 0)  # 4:00 PM
-        self.timezone = pytz.timezone('US/Eastern')  # Adjust timezone as needed
+        # Define market close time in EST
+        self.market_close_time = time(16, 0)  # 4:00 PM EST
+        self.est_timezone = pytz.timezone('US/Eastern')
+        self.local_timezone = pytz.timezone('Europe/Bucharest')  # Romania time
+        
+        # Convert EST market close to local time
+        est_close_time = datetime.combine(datetime.today(), self.market_close_time)
+        est_close_time = self.est_timezone.localize(est_close_time)
+        local_close_time = est_close_time.astimezone(self.local_timezone)
+        self.report_time = (local_close_time + timedelta(minutes=5)).time()
     
     async def schedule_daily_report(self):
         """Schedule daily reports at market close"""
@@ -40,6 +46,9 @@ class ReportScheduler:
         self.logger.info("Generating end-of-day trading report...")
         
         try:
+            # Fetch closed trades from exchange for the past 24 hours
+            await self.trading_bot.get_closed_trades_from_exchange()
+            
             # Make sure trade tracker has the latest data
             if hasattr(self.trading_bot, 'trade_tracker'):
                 # Update report service with latest trade data

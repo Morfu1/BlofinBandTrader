@@ -828,6 +828,72 @@ class TradingBot:
         except Exception as e:
             self.logger.error(f"Error generating test report: {str(e)}")
 
+    async def get_closed_trades_from_exchange(self, start_time=None, end_time=None):
+        """Fetch closed trades from exchange API for the daily report"""
+        try:
+            endpoint = "/api/v1/trade/order-history"
+            url = f"{self.config.REST_URL}{endpoint}"
+            
+            # Default to last 24 hours if no time range specified
+            if not start_time:
+                start_time = int((datetime.now() - timedelta(days=1)).timestamp() * 1000)
+            if not end_time:
+                end_time = int(datetime.now().timestamp() * 1000)
+                
+            params = {
+                "beginTime": start_time,
+                "endTime": end_time,
+                "state": "filled"
+            }
+            
+            # Authentication code here...
+            timestamp = Utils.get_timestamp()
+            nonce = Utils.get_nonce()
+            signature = Utils.generate_signature(timestamp, nonce, None)
+            
+            headers = {
+                "ACCESS-KEY": self.config.API_KEY,
+                "ACCESS-SIGN": signature,
+                "ACCESS-TIMESTAMP": timestamp,
+                "ACCESS-NONCE": nonce,
+                "ACCESS-PASSPHRASE": self.config.API_PASSPHRASE,
+                "Content-Type": "application/json"
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params, headers=headers) as response:
+                    data = await response.json()
+                    
+                    if data['code'] == '0' and 'data' in data:
+                        # Process closed trades and add to trade_tracker
+                        for trade in data['data']:
+                            # Convert to TradeRecord and add to tracker
+                            self.trade_tracker.add_closed_trade(self._convert_exchange_trade(trade))
+                        
+                        return True
+                    else:
+                        self.logger.error(f"Failed to fetch closed trades: {data.get('msg', 'Unknown error')}")
+                        return False
+        except Exception as e:
+            self.logger.error(f"Error fetching closed trades: {str(e)}")
+            return False
+
+    def _convert_exchange_trade(self, trade_data):
+        """Convert exchange trade data to TradeRecord format"""
+        return TradeRecord(
+            trading_pair=trade_data.get('instId', ''),
+            entry_time=datetime.fromtimestamp(float(trade_data.get('cTime', 0))/1000),
+            exit_time=datetime.fromtimestamp(float(trade_data.get('uTime', 0))/1000),
+            position_type="long" if float(trade_data.get('size', 0)) > 0 else "short",
+            entry_price=float(trade_data.get('avgPx', 0)),
+            exit_price=float(trade_data.get('lastPx', 0)),
+            take_profit=float(trade_data.get('tpTriggerPx', 0)),
+            stop_loss=float(trade_data.get('slTriggerPx', 0)),
+            size=abs(float(trade_data.get('size', 0))),
+            pnl=float(trade_data.get('pnl', 0)),
+            pnl_percent=float(trade_data.get('pnlRatio', 0)) * 100,
+            exit_reason=trade_data.get('closeReason', 'unknown')
+        )
 
 # Move main execution block outside the class
 if __name__ == "__main__":
