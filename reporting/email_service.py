@@ -39,10 +39,10 @@ class TradingReportEmailService:
     
     def send_daily_report(self, additional_message: str = "") -> bool:
         """Generate and send daily trading report via email"""
-        if not self.trade_tracker or not self.report_generator:
+        if not self.trade_tracker:
             self.logger.error("Cannot send report: Trade Tracker not initialized")
             return False
-            
+        
         try:
             # Generate HTML report
             html_content = self.report_generator.generate_html_report()
@@ -70,10 +70,10 @@ class TradingReportEmailService:
             with smtplib.SMTP_SSL('smtp.gmail.com', 465, context=context) as server:
                 server.login(self.gmail_user, self.gmail_password)
                 server.sendmail(self.gmail_user, self.notification_email, msg.as_string())
-            
+                
             self.logger.info(f"Daily trading report sent successfully to {self.notification_email}")
             return True
-        
         except Exception as e:
             self.logger.error(f"Error sending daily trading report: {str(e)}")
             return False
+

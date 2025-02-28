@@ -16,7 +16,7 @@ class ReportScheduler:
         local_tz = pytz.timezone('Europe/Bucharest')
         
         # Create EST market close time (16:24 EST)
-        est_close = datetime.now(est_tz).replace(hour=16, minute=41, second=0, microsecond=0)
+        est_close = datetime.now(est_tz).replace(hour=16, minute=4, second=0, microsecond=0)
         
         # Convert to local time
         local_time = est_close.astimezone(local_tz)
@@ -68,12 +68,10 @@ class ReportScheduler:
     async def generate_and_send_report(self):
         """Generate and send the daily trading report"""
         self.logger.info("Generating end-of-day trading report...")
-        
         try:
             # Fetch closed trades from exchange for the past 24 hours
             start_time = datetime.now() - timedelta(hours=24)
             self.logger.info(f"Fetching trades from {start_time} to {datetime.now()}")
-            
             await self.trading_bot.get_closed_trades_from_exchange(
                 start_time=start_time,
                 end_time=datetime.now()
@@ -87,10 +85,9 @@ class ReportScheduler:
                 # Update report service with latest trade data
                 self.report_service.set_trade_tracker(self.trading_bot.trade_tracker)
                 
+                # Generate custom message with key stats
                 if trade_count > 0:
-                    # Generate custom message with key stats
                     summary = self.trading_bot.trade_tracker.get_trade_summary()
-                    
                     additional_message = (
                         f"Trading Day Summary - {datetime.now().strftime('%A, %B %d, %Y')}\n\n"
                         f"Total Trades: {summary['total_trades']}\n"
@@ -98,8 +95,8 @@ class ReportScheduler:
                         f"Losing Trades: {summary['losing_trades']}\n"
                         f"Win Rate: {summary['win_rate']*100:.1f}%\n"
                         f"Total P&L: ${summary['total_pnl']:.2f}\n"
-                        f"Best Performing Pair: {summary['best_pair']} (${summary.get('best_pair_pnl', 0):.2f})\n"
-                        f"Worst Performing Pair: {summary['worst_pair']} (${summary.get('worst_pair_pnl', 0):.2f})\n\n"
+                        f"Best Performing Pair: {summary['best_pair']}\n"
+                        f"Worst Performing Pair: {summary['worst_pair']}\n\n"
                         f"See attached HTML report for complete details."
                     )
                 else:
@@ -115,15 +112,13 @@ class ReportScheduler:
                 
                 # Send report
                 success = self.report_service.send_daily_report(additional_message)
-                
                 if success:
                     self.logger.info("End-of-day report sent successfully")
                 else:
                     self.logger.error("Failed to send end-of-day report")
-                
             else:
                 self.logger.error("Trading bot has no trade tracker")
-                
         except Exception as e:
             self.logger.error(f"Error generating end-of-day report: {str(e)}")
             self.logger.exception("Full traceback:")
+

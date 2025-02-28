@@ -1,5 +1,6 @@
 from typing import Dict, List, Optional
 import asyncio
+from uuid import uuid4
 import pandas as pd
 import logging
 import aiohttp
@@ -897,70 +898,157 @@ class TradingBot:
             self.logger.error(f"Error generating test report: {str(e)}")
 
     async def get_closed_trades_from_exchange(self, start_time=None, end_time=None):
-        """Fetch closed trades from exchange API for the daily report"""
+        """Fetch closed trades from exchange API for the daily report using orders history"""
         try:
             # If no start_time provided, use beginning of current day
             if start_time is None:
                 start_time = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-            
             # If no end_time provided, use current time
             if end_time is None:
                 end_time = datetime.now()
-
+            
             # Convert times to milliseconds timestamp
             start_ms = int(start_time.timestamp() * 1000)
             end_ms = int(end_time.timestamp() * 1000)
-
-            # Fetch closed orders for each trading pair
+            
+            self.logger.info(f"Fetching orders history from {start_time} to {end_time}")
+            
+            # Fetch orders for each trading pair with a delay between requests
             for pair in self.current_trading_pairs:
-                endpoint = f"/api/v1/trade/order-history"
+                # Use the orders history endpoint
+                endpoint = "/api/v1/trade/orders-history"
+                
+                # Build query string with parameters
                 params = {
                     'instId': pair,
-                    'startTime': start_ms,
-                    'endTime': end_ms,
-                    'state': 'closed'  # Only get closed orders
+                    'state': 'filled',  # Only get filled orders
+                    'begin': str(start_ms),
+                    'end': str(end_ms),
+                    'limit': "100"  # Maximum allowed
+                }
+                
+                # Generate a unique timestamp and nonce for each request
+                timestamp = Utils.get_timestamp()
+                nonce = str(uuid4())  # Generate a unique nonce for each request
+                
+                # For GET requests with query params
+                query_string = f"?instId={pair}&state=filled&begin={start_ms}&end={end_ms}&limit=100"
+                signature_endpoint = f"{endpoint}{query_string}"
+                
+                # Generate signature
+                signature = Utils.generate_signature(
+                    self.config.API_SECRET,
+                    "GET",
+                    signature_endpoint,
+                    timestamp,
+                    nonce,
+                    None  # No body for GET request
+                )
+                
+                headers = {
+                    "ACCESS-KEY": self.config.API_KEY,
+                    "ACCESS-SIGN": signature,
+                    "ACCESS-TIMESTAMP": timestamp,
+                    "ACCESS-NONCE": nonce,
+                    "ACCESS-PASSPHRASE": self.config.API_PASSPHRASE,
+                    "Content-Type": "application/json"
                 }
                 
                 url = f"{self.config.REST_URL}{endpoint}"
                 
                 async with aiohttp.ClientSession() as session:
-                    async with session.get(url, params=params) as response:
+                    async with session.get(url, params=params, headers=headers) as response:
                         if response.status == 200:
                             data = await response.json()
-                            orders = data.get('data', [])
-                            
-                            for order in orders:
-                                # Create TradeRecord from order data
-                                trade_record = TradeRecord(
-                                    trading_pair=pair,
-                                    entry_time=datetime.fromtimestamp(float(order['openTime'])/1000),
-                                    exit_time=datetime.fromtimestamp(float(order['closeTime'])/1000),
-                                    position_type="long" if order['posSide'] == 'long' else "short",
-                                    entry_price=float(order['avgOpenPrice']),
-                                    exit_price=float(order['avgClosePrice']),
-                                    take_profit=float(order.get('takeProfit', 0)),
-                                    stop_loss=float(order.get('stopLoss', 0)),
-                                    size=float(order['size']),
-                                    pnl=float(order['pnl']),
-                                    pnl_percent=float(order['pnlRatio']) * 100,
-                                    exit_reason=order.get('closeReason', 'unknown')
-                                )
+                            if data.get('code') == '0':  # Check for successful API response
+                                orders = data.get('data', [])
+                                self.logger.info(f"Retrieved {len(orders)} filled orders for {pair}")
                                 
-                                # Add to trade tracker
-                                self.trade_tracker.add_closed_trade(trade_record)
-                                self.logger.info(
-                                    f"Retrieved closed trade from exchange: {pair} {trade_record.position_type} "
-                                    f"with P&L: ${trade_record.pnl:.2f}"
-                                )
+                                # Process only orders with actual fills and valid data
+                                for order in orders:
+                                    try:
+                                        # Skip orders that don't have actual fills
+                                        filled_size = float(order.get('filledSize', 0) or 0)
+                                        if filled_size <= 0:
+                                            continue
+                                        
+                                        # Get the PnL - for filled orders
+                                        pnl = float(order.get('pnl', 0) or 0)
+                                        
+                                        # Get price with safe defaults
+                                        price = float(order.get('price', 0) or 0)
+                                        avg_price = float(order.get('averagePrice', 0) or 0)  # This is the actual execution price
+                                        
+                                        # Skip orders with invalid prices
+                                        if price <= 0 and avg_price <= 0:
+                                            continue
+                                        
+                                        # For close orders, determine position type from side
+                                        side = order.get('side', '')
+                                        pos_side = order.get('positionSide', 'net')
+                                        reduce_only = order.get('reduceOnly', 'false').lower() == 'true'
+                                        
+                                        # Only consider close orders (reduceOnly=true or with PnL)
+                                        if not reduce_only and pnl == 0:
+                                            continue
+                                            
+                                        # Determine position type
+                                        if pos_side == 'net':
+                                            position_type = "short" if side == 'buy' else "long"
+                                        else:
+                                            position_type = pos_side
+                                        
+                                        # Calculate PnL percentage safely
+                                        pnl_percent = 0
+                                        entry_price = price if price > 0 else avg_price
+                                        if entry_price > 0 and filled_size > 0:
+                                            pnl_percent = (pnl / (entry_price * filled_size)) * 100
+                                        
+                                        # Create TradeRecord from order data
+                                        trade_record = TradeRecord(
+                                            trading_pair=pair,
+                                            entry_time=datetime.fromtimestamp(int(float(order.get('createTime', 0)))/1000),
+                                            exit_time=datetime.fromtimestamp(int(float(order.get('updateTime', 0)))/1000),
+                                            position_type=position_type,
+                                            entry_price=entry_price,
+                                            exit_price=avg_price if avg_price > 0 else entry_price,
+                                            take_profit=float(order.get('tpTriggerPrice', 0) or 0),
+                                            stop_loss=float(order.get('slTriggerPrice', 0) or 0),
+                                            size=filled_size,
+                                            pnl=pnl,
+                                            pnl_percent=pnl_percent,
+                                            exit_reason=order.get('orderCategory', 'normal')
+                                        )
+                                        
+                                        # Add to trade tracker
+                                        self.trade_tracker.add_closed_trade(trade_record)
+                                        self.logger.info(
+                                            f"Retrieved closed trade from exchange: {pair} {position_type} "
+                                            f"with P&L: ${pnl:.2f}"
+                                        )
+                                    except Exception as e:
+                                        self.logger.error(f"Error processing order record for {pair}: {str(e)}")
+                                        self.logger.exception("Full traceback:")
+                            else:
+                                error_msg = data.get('msg', 'Unknown error')
+                                self.logger.error(f"API error for {pair}: {error_msg}")
                         else:
                             self.logger.error(
-                                f"Failed to fetch closed trades for {pair}. "
-                                f"Status: {response.status}, Response: {await response.text()}"
+                                f"Failed to fetch orders history for {pair}. Status: {response.status}, "
+                                f"Response: {await response.text()}"
                             )
-
+                
+                # Add a short delay between API calls to avoid rate limiting
+                await asyncio.sleep(0.5)
+                            
         except Exception as e:
-            self.logger.error(f"Error fetching closed trades from exchange: {str(e)}")
+            self.logger.error(f"Error fetching orders history from exchange: {str(e)}")
             self.logger.exception("Full traceback:")
+
+
+
+
+
 
     def _convert_exchange_trade(self, trade_data):
         """Convert exchange trade data to TradeRecord format"""
