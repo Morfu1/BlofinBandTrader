@@ -39,15 +39,11 @@ class TradingBot:
         self.position_open = False
         self.logger = logging.getLogger(__name__)
         self.historical_data = {}  # Store historical data for each trading pair
-
+        
         # Track position direction for each trading pair
         self.positions = {}  # Dictionary to store position states for each pair
         self.current_trading_pairs = []  # List of active trading pairs
-
-        self.logger.info(
-            f"Initialized with selection mode: {self.config.COIN_SELECTION_MODE}"
-        )
-
+        
         # Initialize trade tracker for daily report
         self.trade_tracker = DailyTradeTracker()
         
@@ -56,6 +52,20 @@ class TradingBot:
         
         # Initialize scheduler
         self.report_scheduler = ReportScheduler(self, self.report_service)
+
+        self.logger.info(
+            f"Initialized with selection mode: {self.config.COIN_SELECTION_MODE}"
+        )
+
+    def set_extended_logging(self, enable=True):
+        """Enable extended logging for debugging"""
+        handlers = logging.getLogger().handlers
+        for handler in handlers:
+            if enable:
+                handler.setLevel(logging.DEBUG)
+            else:
+                handler.setLevel(logging.INFO)
+        self.logger.info(f"Extended logging {'enabled' if enable else 'disabled'}")
 
     async def handle_position_updates(self, position_data: Optional[Dict]) -> None:
         """Handle position updates and state management"""
@@ -244,6 +254,10 @@ class TradingBot:
                     'confirm': bool(int(float(candle_data[0][8]))) if len(candle_data[0]) > 8 else False,
                 }
                 
+                # If this is a confirmed candle, set the flag to log positions
+                if current_candle['confirm']:
+                    self.risk_manager.set_log_on_next_candle()
+                
                 # Update our internal historical data structure with the new candle
                 dt = pd.to_datetime(current_candle['ts'], unit='ms')
                 if trading_pair in self.historical_data:
@@ -322,21 +336,21 @@ class TradingBot:
                         # Get position type
                         position_type = "long" if self.positions[trading_pair]['long_position_open'] else "short"
                         
-                        # Calculate current PnL percentage
-                        current_position = await self.risk_manager.get_current_positions()
-                        current_pnl_pct = float(current_position.get('unrealizedPnlRatio', 0)) * 100
-                        
-                        # Process candle update to potentially adjust stop loss
-                        # This checks if candle is confirmed and if we've hit profit threshold
-                        new_stop_loss = await self.band_sl_manager.process_candle_update(
-                            trading_pair, 
-                            current_candle,
-                            current_pnl_pct
-                        )
-                        
-                        # If stop loss needs to be updated, send the order to modify it
-                        if new_stop_loss is not None:
-                            await self.update_stop_loss(trading_pair, position_type, new_stop_loss)
+                        # Only check positions on confirmed candles to reduce API calls and logging
+                        if current_candle['confirm']:
+                            # Get current position data with complete information
+                            current_position = await self.risk_manager.get_current_positions()
+                            
+                            # Process candle update with position data
+                            new_stop_loss = await self.band_sl_manager.process_candle_update(
+                                trading_pair,
+                                current_candle,
+                                current_position
+                            )
+                            
+                            # If stop loss needs to be updated, send the order to modify it
+                            if new_stop_loss is not None:
+                                await self.update_stop_loss(trading_pair, position_type, new_stop_loss)
 
                     # Only log if it's a signal, confirmed candle, or logging is explicitly enabled
                     if is_valid_signal or should_log:
@@ -563,13 +577,21 @@ class TradingBot:
 
             entry_order_response = await self.place_order(entry_order, "/api/v1/trade/order")
 
-            # Set up position tracking when a new position is opened
-            await self.band_sl_manager.initialize_position_tracking(
-                trading_pair,
-                position_type,
-                entry_price,
-                stop_loss
+            # Initialize position tracking after successful order placement
+            await self.initialize_position_tracking(
+                trading_pair=trading_pair,
+                position_type=position_type,
+                entry_price=entry_price,
+                stop_loss=stop_loss
             )
+
+            # Add verification logging
+            self.logger.info(
+                f"\nVerifying Band SL Tracking Status:\n"
+                f"========================================\n"
+                f"Trading Pair: {trading_pair}\n"
+                f"Tracking Status: {self.band_sl_manager.position_states.get(trading_pair, 'Not tracked')}\n"
+                f"========================================")
 
             if not entry_order_response or entry_order_response.get('code') != '0':
                 self.logger.error(
@@ -731,20 +753,26 @@ class TradingBot:
                 self.report_scheduler.schedule_daily_report()
             )
             
-            self.logger.info(
-                f"Trading bot started. Watching {self.current_trading_pairs} on {self.config.TIMEFRAME} timeframe"
-            )
-
             if self.websocket_manager is None:
-                raise RuntimeError(
-                    "WebSocket manager not properly initialized")
+                raise RuntimeError("WebSocket manager not properly initialized")
+
+            # Create websocket tasks with proper error handling
+            websocket_tasks = []
+            for method in [
+                self.websocket_manager.heartbeat,
+                self.websocket_manager.message_handler,
+                self.websocket_manager.connection_health_monitor
+            ]:
+                if method is not None:
+                    websocket_tasks.append(asyncio.create_task(method()))
+                else:
+                    self.logger.error(f"WebSocket method {method.__name__} is None")
 
             # Wait for all tasks
             await asyncio.gather(
-                self.websocket_manager.heartbeat(),
-                self.websocket_manager.message_handler(),
-                self.websocket_manager.connection_health_monitor(),
-                report_scheduler_task  # Add the report scheduler task
+                *websocket_tasks,
+                report_scheduler_task,
+                return_exceptions=True  # Prevent one task failure from killing others
             )
             
         except Exception as e:
@@ -752,7 +780,7 @@ class TradingBot:
         finally:
             # Before shutting down, send a final report
             if hasattr(self, 'trade_tracker') and hasattr(self, 'report_service'):
-                self.report_service.send_daily_report("Final report before bot shutdown.")
+                await self.report_service.send_daily_report("Final report before bot shutdown.")
             
             if self.websocket_manager:
                 await self.websocket_manager.close()
@@ -871,52 +899,68 @@ class TradingBot:
     async def get_closed_trades_from_exchange(self, start_time=None, end_time=None):
         """Fetch closed trades from exchange API for the daily report"""
         try:
-            endpoint = "/api/v1/trade/order-history"
-            url = f"{self.config.REST_URL}{endpoint}"
+            # If no start_time provided, use beginning of current day
+            if start_time is None:
+                start_time = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
             
-            # Default to last 24 hours if no time range specified
-            if not start_time:
-                start_time = int((datetime.now() - timedelta(days=1)).timestamp() * 1000)
-            if not end_time:
-                end_time = int(datetime.now().timestamp() * 1000)
+            # If no end_time provided, use current time
+            if end_time is None:
+                end_time = datetime.now()
+
+            # Convert times to milliseconds timestamp
+            start_ms = int(start_time.timestamp() * 1000)
+            end_ms = int(end_time.timestamp() * 1000)
+
+            # Fetch closed orders for each trading pair
+            for pair in self.current_trading_pairs:
+                endpoint = f"/api/v1/trade/order-history"
+                params = {
+                    'instId': pair,
+                    'startTime': start_ms,
+                    'endTime': end_ms,
+                    'state': 'closed'  # Only get closed orders
+                }
                 
-            params = {
-                "beginTime": start_time,
-                "endTime": end_time,
-                "state": "filled"
-            }
-            
-            # Authentication code here...
-            timestamp = Utils.get_timestamp()
-            nonce = Utils.get_nonce()
-            signature = Utils.generate_signature(timestamp, nonce, None)
-            
-            headers = {
-                "ACCESS-KEY": self.config.API_KEY,
-                "ACCESS-SIGN": signature,
-                "ACCESS-TIMESTAMP": timestamp,
-                "ACCESS-NONCE": nonce,
-                "ACCESS-PASSPHRASE": self.config.API_PASSPHRASE,
-                "Content-Type": "application/json"
-            }
-            
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, params=params, headers=headers) as response:
-                    data = await response.json()
-                    
-                    if data['code'] == '0' and 'data' in data:
-                        # Process closed trades and add to trade_tracker
-                        for trade in data['data']:
-                            # Convert to TradeRecord and add to tracker
-                            self.trade_tracker.add_closed_trade(self._convert_exchange_trade(trade))
-                        
-                        return True
-                    else:
-                        self.logger.error(f"Failed to fetch closed trades: {data.get('msg', 'Unknown error')}")
-                        return False
+                url = f"{self.config.REST_URL}{endpoint}"
+                
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, params=params) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            orders = data.get('data', [])
+                            
+                            for order in orders:
+                                # Create TradeRecord from order data
+                                trade_record = TradeRecord(
+                                    trading_pair=pair,
+                                    entry_time=datetime.fromtimestamp(float(order['openTime'])/1000),
+                                    exit_time=datetime.fromtimestamp(float(order['closeTime'])/1000),
+                                    position_type="long" if order['posSide'] == 'long' else "short",
+                                    entry_price=float(order['avgOpenPrice']),
+                                    exit_price=float(order['avgClosePrice']),
+                                    take_profit=float(order.get('takeProfit', 0)),
+                                    stop_loss=float(order.get('stopLoss', 0)),
+                                    size=float(order['size']),
+                                    pnl=float(order['pnl']),
+                                    pnl_percent=float(order['pnlRatio']) * 100,
+                                    exit_reason=order.get('closeReason', 'unknown')
+                                )
+                                
+                                # Add to trade tracker
+                                self.trade_tracker.add_closed_trade(trade_record)
+                                self.logger.info(
+                                    f"Retrieved closed trade from exchange: {pair} {trade_record.position_type} "
+                                    f"with P&L: ${trade_record.pnl:.2f}"
+                                )
+                        else:
+                            self.logger.error(
+                                f"Failed to fetch closed trades for {pair}. "
+                                f"Status: {response.status}, Response: {await response.text()}"
+                            )
+
         except Exception as e:
-            self.logger.error(f"Error fetching closed trades: {str(e)}")
-            return False
+            self.logger.error(f"Error fetching closed trades from exchange: {str(e)}")
+            self.logger.exception("Full traceback:")
 
     def _convert_exchange_trade(self, trade_data):
         """Convert exchange trade data to TradeRecord format"""
@@ -939,22 +983,56 @@ class TradingBot:
         """Update the stop loss for an existing position"""
         try:
             # Get current position details
-            current_position = await self.risk_manager.get_current_positions()
+            position = await self.risk_manager.get_current_positions()
+            if not position or float(position.get('positions', 0)) == 0:
+                self.logger.error(f"No active position found for {trading_pair}")
+                return False
+                
+            # Get position ID
+            position_id = position.get('positionId')
+            if not position_id:
+                self.logger.error("Position ID not found in position data")
+                return False
+                
+            # Get algo orders to find SL
+            algo_orders = await self.get_algo_orders(trading_pair)
+            algo_id = None
             
-            # Format order payload
+            for order in algo_orders:
+                if (order.get('positionId') == position_id and 
+                    order.get('type') == 'sl'):
+                    algo_id = order.get('algoId')
+                    break
+                    
+            if not algo_id:
+                self.logger.error(f"Could not find SL order ID for position {position_id}")
+                return False
+                
+            # Format stop loss price correctly
+            new_stop_loss = self.risk_manager.round_to_tick(float(new_stop_loss))
+            
+            # Create proper update order request
             update_order = {
                 "instId": trading_pair,
-                "slTriggerPrice": str(new_stop_loss),
-                "slOrderPrice": "-1",  # Market order for stop loss
-                "slTriggerPxType": "mark"  # Use mark price for trigger
+                "algoId": algo_id,
+                "slTriggerPrice": new_stop_loss,
+                "slOrderPrice": "-1"  # Market order
             }
             
-            # Send the order to update stop loss
-            endpoint = "/api/v1/trade/order-algo"
+            self.logger.info(
+                f"\nSending SL Update Request:\n"
+                f"Trading Pair: {trading_pair}\n"
+                f"Position Type: {position_type}\n"
+                f"New Stop Loss: ${float(new_stop_loss)}\n"
+                f"Algo ID: {algo_id}"
+            )
+            
+            # Send update request
+            endpoint = "/api/v1/trade/amend-algos"
             response = await self.place_order(update_order, endpoint)
             
             if response and response.get('code') == '0':
-                self.logger.info(f"Stop loss successfully updated to ${new_stop_loss:.8f} for {trading_pair}")
+                self.logger.info(f"Successfully updated stop loss to ${float(new_stop_loss)}")
                 return True
             else:
                 self.logger.error(f"Failed to update stop loss: {response}")
@@ -963,6 +1041,65 @@ class TradingBot:
         except Exception as e:
             self.logger.error(f"Error updating stop loss: {str(e)}")
             return False
+
+
+    async def get_algo_orders(self, trading_pair):
+        """Fetch active algo orders (including SL/TP) from Blofin"""
+        try:
+            endpoint = "/api/v1/trade/orders-algo-pending"
+            url = f"{self.config.REST_URL}{endpoint}"
+            params = {"instId": trading_pair}
+            
+            # Generate authentication parameters
+            timestamp = Utils.get_timestamp()
+            nonce = Utils.get_nonce()
+            
+            # For GET requests with query params, include them in the endpoint
+            query_string = f"?instId={trading_pair}"
+            signature_endpoint = f"{endpoint}{query_string}"
+            
+            # Generate signature
+            signature = Utils.generate_signature(
+                self.config.API_SECRET,
+                "GET",
+                signature_endpoint,
+                timestamp,
+                nonce,
+                None  # No body for GET request
+            )
+            
+            headers = {
+                "ACCESS-KEY": self.config.API_KEY,
+                "ACCESS-SIGN": signature,
+                "ACCESS-TIMESTAMP": timestamp,
+                "ACCESS-NONCE": nonce,
+                "ACCESS-PASSPHRASE": self.config.API_PASSPHRASE,
+                "Content-Type": "application/json"
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params, headers=headers) as response:
+                    data = await response.json()
+                    
+                    if data['code'] == '0':
+                        return data.get('data', [])
+                    else:
+                        self.logger.error(f"Failed to fetch algo orders: {data}")
+                        return []
+                        
+        except Exception as e:
+            self.logger.error(f"Error fetching algo orders: {str(e)}")
+            return []
+
+    async def initialize_position_tracking(self, trading_pair, position_type, entry_price, stop_loss):
+        """Initialize position tracking for band-based SL"""
+        await self.band_sl_manager.initialize_position_tracking(
+            trading_pair=trading_pair,
+            position_type=position_type,
+            entry_price=entry_price,
+            stop_loss=stop_loss
+        )
+        self.logger.info(f"Initialized position tracking for {trading_pair}")
 
 # Move main execution block outside the class
 if __name__ == "__main__":

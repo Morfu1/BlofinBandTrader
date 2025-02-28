@@ -68,7 +68,7 @@ class Config:
 
     # Band-Based Stop Loss Configuration
     BAND_SL_ENABLED: bool = True
-    BAND_SL_ACTIVATION_PROFIT: float = 2.0  # Minimum profit % to activate band-based stop loss
+    BAND_SL_ACTIVATION_PROFIT: float = 2.0  # This represents absolute dollar value (USD) to activate band-based stop loss
     BAND_SL_BUFFER: float = 0.2             # Buffer percentage to add to bands
 
     # Exchange Limits

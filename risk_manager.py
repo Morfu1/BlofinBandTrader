@@ -10,6 +10,9 @@ class RiskManager:
         self.config = config
         self.logger = logging.getLogger(__name__)
         self.logger.setLevel(logging.INFO)
+        
+        # Add this flag
+        self.should_log_on_next_candle = False
 
         # Initialize with proper type annotations
         self.contract_value: Optional[Decimal] = None
@@ -436,7 +439,7 @@ class RiskManager:
         """Calculate position value in USD"""
         return size * price
 
-    async def get_current_positions(self) -> Optional[Dict]:
+    async def get_current_positions(self, log_details=True) -> Optional[Dict]:
         """Fetch current positions from Blofin"""
         try:
             endpoint = "/api/v1/account/positions"
@@ -476,7 +479,9 @@ class RiskManager:
 
                     if data['code'] == '0':
                         if not data['data']:
-                            self.logger.info(f"No open positions found for {self.config.TRADING_PAIR}")
+                            # Only log if explicitly requested with log_details=True
+                            if log_details:
+                                self.logger.info(f"No open positions found for {self.config.TRADING_PAIR}")
                             return {
                                 'instId': self.config.TRADING_PAIR,
                                 'positions': '0',
@@ -484,31 +489,42 @@ class RiskManager:
                             }  # Return empty position data instead of None
 
                         positions = data['data']
+                        
+                        # Add this variable to track whether we should log
+                        should_log = False
+                        
+                        # Only log on candle confirmation by checking a flag
+                        if hasattr(self, 'should_log_on_next_candle') and self.should_log_on_next_candle:
+                            should_log = True
+                            # Reset the flag after logging
+                            self.should_log_on_next_candle = False
+
                         for position in positions:
                             # Calculate margin in USD
                             size = float(position['positions'])
                             mark_price = float(position['markPrice'])
                             leverage = float(position['leverage'])
-
                             margin_usd = (size * mark_price) / leverage
                             position_value_usd = size * mark_price
 
-                            self.logger.info(
-                                f"\nCurrent Position Details:\n"
-                                f"========================================\n"
-                                f"Position ID: {position['positionId']}\n"
-                                f"Instrument: {position['instId']}\n"
-                                f"Type: {position['marginMode']}\n"
-                                f"Side: {position['positionSide']}\n"
-                                f"Size: {position['positions']}\n"
-                                f"Average Price: ${float(position['averagePrice']):.6f}\n"
-                                f"Mark Price: ${mark_price:.6f}\n"
-                                f"Position Value: ${position_value_usd:.2f}\n"
-                                f"Margin Used: ${margin_usd:.2f}\n"
-                                f"Unrealized PnL: ${float(position['unrealizedPnl']):.2f}\n"
-                                f"Margin Ratio: {float(position['marginRatio']):.2f}%\n"
-                                f"Leverage: {position['leverage']}x\n"
-                                f"========================================")
+                            # Only log if explicitly requested AND should_log is True
+                            if log_details and should_log:
+                                self.logger.info(
+                                    f"\nCurrent Position Details:\n"
+                                    f"========================================\n"
+                                    f"Position ID: {position['positionId']}\n"
+                                    f"Instrument: {position['instId']}\n"
+                                    f"Type: {position['marginMode']}\n"
+                                    f"Side: {position['positionSide']}\n"
+                                    f"Size: {position['positions']}\n"
+                                    f"Average Price: ${float(position['averagePrice']):.6f}\n"
+                                    f"Mark Price: ${mark_price:.6f}\n"
+                                    f"Position Value: ${position_value_usd:.2f}\n"
+                                    f"Margin Used: ${margin_usd:.2f}\n"
+                                    f"Unrealized PnL: ${float(position['unrealizedPnl']):.2f}\n"
+                                    f"Margin Ratio: {float(position['marginRatio']):.2f}%\n"
+                                    f"Leverage: {position['leverage']}x\n"
+                                    f"========================================")
 
                         return positions[0] if positions else {
                             'instId': self.config.TRADING_PAIR,
@@ -530,3 +546,7 @@ class RiskManager:
                 'positions': '0',
                 'positionSide': 'net'
             }
+
+    def set_log_on_next_candle(self):
+        """Set flag to log position details on next candle close"""
+        self.should_log_on_next_candle = True
