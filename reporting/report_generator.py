@@ -71,18 +71,28 @@ class TradingReportGenerator:
                 <style>
                     body {{ font-family: Arial, sans-serif; margin: 0; padding: 20px; color: #333; }}
                     h1, h2 {{ color: #0056b3; }}
-                    .container {{ max-width: 1000px; margin: 0 auto; }}
+                    .container {{ max-width: 1200px; margin: 0 auto; }}
                     .header {{ background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin-bottom: 20px; }}
                     .section {{ margin-bottom: 25px; }}
                     .summary-box {{ background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin-bottom: 15px; }}
-                    table {{ width: 100%; border-collapse: collapse; margin-bottom: 20px; }}
-                    th, td {{ padding: 12px 15px; text-align: left; border-bottom: 1px solid #ddd; }}
-                    th {{ background-color: #0056b3; color: white; }}
+                    table {{ width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 13px; }}
+                    th {{ 
+                        background-color: #0056b3; 
+                        color: white; 
+                        padding: 12px 8px; 
+                        text-align: left; 
+                        white-space: nowrap; 
+                    }}
+                    td {{ 
+                        padding: 10px 8px; 
+                        border-bottom: 1px solid #ddd; 
+                        white-space: nowrap; 
+                    }}
                     tr:hover {{ background-color: #f5f5f5; }}
                     .positive {{ color: #28a745; }}
                     .negative {{ color: #dc3545; }}
                     .charts {{ display: flex; flex-wrap: wrap; gap: 20px; margin-bottom: 20px; }}
-                    .chart {{ flex: 1; min-width: 300px; background-color: white; border-radius: 5px; padding: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }}
+                    .chart {{ flex: 1; min-width: 300px; background-color: white; border-radius: 5px; padding: 10px; }}
                 </style>
             </head>
             <body>

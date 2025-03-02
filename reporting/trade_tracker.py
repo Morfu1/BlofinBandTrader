@@ -72,13 +72,32 @@ class DailyTradeTracker:
         """Convert trade records to DataFrame for easier reporting"""
         if not self.trades:
             return pd.DataFrame()
-            
-        df = pd.DataFrame([vars(trade) for trade in self.trades])
-        # Format columns for better readability
+        
+        df = pd.DataFrame([{
+            'Contracts': f"{trade.symbol}",
+            'Side': trade.side.capitalize(),
+            'Status': 'Closed',
+            'Margin Mode': 'Isolated',
+            'Leverage': f"{trade.leverage}X",
+            'Avg. Price': trade.entry_price,
+            'Exit Price': trade.exit_price,
+            'Realized PnL': trade.pnl,
+            'PnL %': trade.pnl_percent,
+            'Closed PnL': trade.pnl - trade.fees,
+            'Trading Fee': trade.fees,
+            'Max Held': f"{trade.position_size} {trade.symbol.replace('USDT', '')}",
+            'Closed': f"{trade.position_size} {trade.symbol.replace('USDT', '')}",
+            'Time Opened': trade.entry_time.strftime('%m/%d/%Y\n%H:%M:%S'),
+            'Time Closed': trade.exit_time.strftime('%m/%d/%Y\n%H:%M:%S')
+        } for trade in self.trades])
+
+        # Format numeric columns
         if not df.empty:
-            for col in ['entry_price', 'exit_price', 'take_profit', 'stop_loss', 'pnl']:
-                if col in df.columns:
-                    df[col] = df[col].map('${:,.6f}'.format)
-            if 'pnl_percent' in df.columns:
-                df['pnl_percent'] = df['pnl_percent'].map('{:+.2f}%'.format)
+            df['Avg. Price'] = df['Avg. Price'].map('{:.3f} USDT'.format)
+            df['Exit Price'] = df['Exit Price'].map('{:.3f} USDT'.format)
+            df['Realized PnL'] = df['Realized PnL'].map(lambda x: f"{'+' if x >= 0 else ''}{x:.2f} USDT")
+            df['PnL %'] = df['PnL %'].map(lambda x: f"({'+' if x >= 0 else ''}{x:.2f}%)")
+            df['Closed PnL'] = df['Closed PnL'].map('{:.2f} USDT'.format)
+            df['Trading Fee'] = df['Trading Fee'].map('{:.4f} USDT'.format)
+
         return df
