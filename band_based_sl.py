@@ -20,12 +20,12 @@ class BandBasedStopLossManager:
         # Tracking state for each position
         self.position_states = {}  # Dict to track state of each position
 
-    async def initialize_position_tracking(self, trading_pair: str, position_side: str,
+    async def initialize_position_tracking(self, trading_pair: str, position_type: str,
                                entry_price: float, initial_sl: float) -> None:
         """Initialize tracking for a new position"""
         self.position_states[trading_pair] = {
             'entry_price': Decimal(str(entry_price)),
-            'position_side': position_side,  # 'long' or 'short'
+            'position_type': position_type,  # Changed from position_side to position_type
             'initial_sl': Decimal(str(initial_sl)),  # Initial stop loss
             'current_sl': Decimal(str(initial_sl)),  # Current stop loss (will be updated)
             'band_sl_activated': False,  # Whether band-based SL has been activated
@@ -38,7 +38,7 @@ class BandBasedStopLossManager:
         self.logger.info(
             f"\nBand-Based Stop Loss Tracking Initialized for {trading_pair}:\n"
             f"========================================\n"
-            f"Position Side: {position_side}\n"
+            f"Position Type: {position_type}\n"
             f"Entry Price: ${float(entry_price):.8f}\n"
             f"Initial Stop Loss: ${float(initial_sl):.8f}\n"
             f"Activation Profit Threshold: ${float(self.activation_profit_usd):.2f}\n"

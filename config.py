@@ -41,7 +41,7 @@ class Config:
     SINGLE_COIN: str = "AR-USDT"  # Default trading pair for single mode
     MULTIPLE_COINS: List[str] = field(
         default_factory=lambda: ["AR-USDT", "NEAR-USDT", "BRETT-USDT", "POPCAT-USDT", "WIF-USDT", "TIA-USDT", "SOL-USDT", "OP-USDT", "XRP-USDT", "LINK-USDT", "ADA-USDT", "DOGE-USDT", "AVAX-USDT", "WLD-USDT", "PEPE-USDT", "INJ-USDT", "MKR-USDT", "JASMY-USDT", "PEOPLE-USDT", "TON-USDT", "KAS-USDT"])  # List of trading pairs
-    TOP_VOLUME_COUNT: int = 10  # Number of top volume pairs to track
+    TOP_VOLUME_COUNT: int = 20  # Number of top volume pairs to track
 
     # For backward compatibility
     TRADING_PAIR: str = "WIF-USDT"  # Will be set based on selection mode
@@ -59,7 +59,7 @@ class Config:
     HIGH_VOLATILITY_THRESHOLD: float = 2.5
 
     # Risk Management Parameters
-    TAKE_PROFIT_PERCENT: float = 4.0
+    TAKE_PROFIT_PERCENT: float = 2.7
     SL_PERCENTAGE: float = 1.0
     MAX_DRAWDOWN: float = 5.0
     TRAILING_STOP: float = 0.5
@@ -67,7 +67,7 @@ class Config:
     STOP_LOSS_BUFFER: float = 0.2  # Buffer percentage to avoid stop hunts (0.2%)
 
     # Band-Based Stop Loss Configuration
-    BAND_SL_ENABLED: bool = True
+    BAND_SL_ENABLED: bool = False
     BAND_SL_ACTIVATION_PROFIT: float = 2.0  # This represents absolute dollar value (USD) to activate band-based stop loss
     BAND_SL_BUFFER: float = 0.2             # Buffer percentage to add to bands
 
