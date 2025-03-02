@@ -65,6 +65,7 @@ class Config:
     TRAILING_STOP: float = 0.5
     RISK_REWARD_RATIO: float = 2.0
     STOP_LOSS_BUFFER: float = 0.2  # Buffer percentage to avoid stop hunts (0.2%)
+    STOP_LOSS_MODE: Literal["bands", "candles"] = "bands"  # Choose between band-based or candle-based SL
 
     # Band-Based Stop Loss Configuration
     BAND_SL_ENABLED: bool = False

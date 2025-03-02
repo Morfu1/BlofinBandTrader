@@ -143,6 +143,65 @@ class RiskManager:
         return f"{rounded_price:0.{tick_precision}f}"
 
     async def calculate_stop_loss(self, entry_price: float, position_type: str) -> float:
+        """Calculate stop loss based on configured method (bands or candles)"""
+        try:
+            if self.config.STOP_LOSS_MODE == "bands":
+                return await self._calculate_band_based_sl(entry_price, position_type)
+            else:  # candles mode
+                return await self._calculate_candle_based_sl(entry_price, position_type)
+        except Exception as e:
+            self.logger.error(f"Error calculating stop loss: {str(e)}")
+            raise
+
+    async def _calculate_band_based_sl(self, entry_price: float, position_type: str) -> float:
+        """Calculate stop loss based on bands"""
+        try:
+            # Get current bands
+            sma, ema = self.indicators.calculate_bands(self.config.TRADING_PAIR)
+            
+            if len(sma) == 0 or len(ema) == 0:
+                self.logger.error("Failed to calculate bands for SL calculation")
+                raise ValueError("Failed to calculate bands for SL calculation")
+            
+            # Get the upper and lower bands
+            upper_band = max(sma.iloc[-1], ema.iloc[-1])
+            lower_band = min(sma.iloc[-1], ema.iloc[-1])
+            
+            # Convert buffer to decimal
+            buffer_percentage = Decimal(str(self.config.STOP_LOSS_BUFFER)) / Decimal('100')
+            
+            # Set stop loss based on position type and bands
+            if position_type == "long":
+                stop_loss = Decimal(str(lower_band)) * (Decimal('1') - buffer_percentage)
+            else:  # short
+                stop_loss = Decimal(str(upper_band)) * (Decimal('1') + buffer_percentage)
+            
+            # Round to valid tick size
+            rounded_sl = self.round_to_tick(float(stop_loss))
+            
+            # Calculate actual risk percentage for logging
+            risk_percentage = abs(float(rounded_sl) - float(entry_price)) / float(entry_price) * 100
+            
+            self.logger.info(
+                f"\nBand-Based Stop Loss Calculation:\n"
+                f"========================================\n"
+                f"Entry Price: ${float(entry_price):.6f}\n"
+                f"Position Type: {position_type}\n"
+                f"Upper Band: ${float(upper_band):.6f}\n"
+                f"Lower Band: ${float(lower_band):.6f}\n"
+                f"Buffer Applied: {float(buffer_percentage) * 100:.2f}%\n"
+                f"Target Risk %: {self.config.SL_PERCENTAGE:.2f}%\n"
+                f"Actual Risk %: {risk_percentage:.2f}%\n"
+                f"Raw SL Price: ${float(stop_loss):.6f}\n"
+                f"Rounded SL Price: ${float(rounded_sl):.6f}\n"
+                f"========================================")
+            
+            return float(rounded_sl)
+        except Exception as e:
+            self.logger.error(f"Error calculating band-based stop loss: {str(e)}")
+            raise
+
+    async def _calculate_candle_based_sl(self, entry_price: float, position_type: str) -> float:
         """Calculate stop loss based on highest/lowest wicks of recent candles"""
         try:
             # Fetch historical candles if not already available
@@ -164,10 +223,8 @@ class RiskManager:
             
             # Set stop loss based on position type and recent wicks with buffer
             if position_type == "long":
-                # For long positions, set SL slightly below the lowest wick
                 stop_loss = Decimal(str(lowest_wick)) * (Decimal('1') - buffer_percentage)
-            else: # short
-                # For short positions, set SL slightly above the highest wick
+            else:  # short
                 stop_loss = Decimal(str(highest_wick)) * (Decimal('1') + buffer_percentage)
             
             # Round to valid tick size
@@ -177,7 +234,7 @@ class RiskManager:
             risk_percentage = abs(float(rounded_sl) - float(entry_price)) / float(entry_price) * 100
             
             self.logger.info(
-                f"\nStop Loss Calculation:\n"
+                f"\nCandle-Based Stop Loss Calculation:\n"
                 f"========================================\n"
                 f"Entry Price: ${float(entry_price):.6f}\n"
                 f"Position Type: {position_type}\n"
@@ -185,7 +242,7 @@ class RiskManager:
                 f"Highest Wick: ${highest_wick:.6f}\n"
                 f"Lowest Wick: ${lowest_wick:.6f}\n"
                 f"Buffer Applied: {float(buffer_percentage) * 100:.2f}%\n"
-                f"Target Risk %: 1.00%\n"
+                f"Target Risk %: {self.config.SL_PERCENTAGE:.2f}%\n"
                 f"Actual Risk %: {risk_percentage:.2f}%\n"
                 f"Raw SL Price: ${float(stop_loss):.6f}\n"
                 f"Rounded SL Price: ${float(rounded_sl):.6f}\n"
@@ -193,7 +250,7 @@ class RiskManager:
             
             return float(rounded_sl)
         except Exception as e:
-            self.logger.error(f"Error calculating stop loss: {str(e)}")
+            self.logger.error(f"Error calculating candle-based stop loss: {str(e)}")
             raise
 
     def calculate_take_profit(self, entry_price: float, stop_loss: float, position_type: str) -> float:
