@@ -35,6 +35,8 @@ class WebSocketManager:
         self.reconnect_attempts = 0
         self.MAX_RECONNECT_ATTEMPTS = 5
         self.last_candle_ts = 0  # Track last processed candle
+        self.connection_lifespan = 3600  # 1 hour in seconds
+        self.connection_start_time = 0
         # Log configured trading pair and timeframe
         self.logger.info(
             f"WebSocket Manager initialized for trading pair: {self.config.TRADING_PAIR} with timeframe: {self.config.TIMEFRAME}"
@@ -72,16 +74,25 @@ class WebSocketManager:
     async def connect(self):
         """Establish WebSocket connections"""
         try:
-            if self.connected:
+            # Add connection lock to prevent multiple simultaneous connections
+            if hasattr(self, '_connecting') and self._connecting:
                 return
+            self._connecting = True
+
+            if self.connected:
+                self._connecting = False
+                return
+
+            # Close existing connections if any
+            await self.close()
 
             # Connect to public WebSocket
             self.logger.info("Connecting to public WebSocket...")
             self.ws_public = await websockets.connect(
                 self.config.WS_PUBLIC_URL,
-                ping_interval=None,  # Disable automatic pings, we'll handle it
-                ping_timeout=20,     # Increased timeout
-                close_timeout=10     # Add explicit close timeout
+                ping_interval=30,  # Increased from 20
+                ping_timeout=30,   # Increased from 20
+                close_timeout=15   # Increased from 10
             )
             self.logger.info("Connected to public WebSocket")
 
@@ -89,27 +100,38 @@ class WebSocketManager:
             self.logger.info("Connecting to private WebSocket...")
             self.ws_private = await websockets.connect(
                 self.config.WS_PRIVATE_URL,
-                ping_interval=None,  # Disable automatic pings, we'll handle it
-                ping_timeout=20,     # Increased timeout
-                close_timeout=10     # Add explicit close timeout
+                ping_interval=30,  # Increased from 20
+                ping_timeout=30,   # Increased from 20
+                close_timeout=15   # Increased from 10
             )
             auth_payload = await self.generate_auth_payload()
             await self.ws_private.send(json.dumps(auth_payload))
 
-            # Wait for auth response
-            response = await self.ws_private.recv()
-            self.logger.info(f"Authentication response: {response}")
+            # Wait for auth response with timeout
+            try:
+                response = await asyncio.wait_for(self.ws_private.recv(), timeout=10)
+                self.logger.info(f"Authentication response: {response}")
+                
+                # Verify authentication success
+                resp_data = json.loads(response)
+                if resp_data.get('code') != '0':
+                    raise Exception(f"Authentication failed: {response}")
+            except asyncio.TimeoutError:
+                raise Exception("Authentication response timeout")
 
             # Subscribe to required channels
             await self.subscribe_channels()
             self.connected = True
             self.reconnect_attempts = 0
+            self.connection_start_time = time.time()  # Record connection start time
             self.logger.info("WebSocket connections established successfully")
 
         except Exception as e:
             self.logger.error(f"Connection error: {str(e)}")
             self.connected = False
             await self.reconnect()
+        finally:
+            self._connecting = False
 
     async def subscribe_channels(self):
         """Subscribe to required WebSocket channels with improved efficiency"""
@@ -123,55 +145,44 @@ class WebSocketManager:
             
             self.logger.info(f"Subscribing to channels for {len(trading_pairs)} pairs")
             
-            # Batch subscriptions into groups of 5 to avoid overwhelming the connection
-            batch_size = 5
-            for i in range(0, len(trading_pairs), batch_size):
-                batch = trading_pairs[i:i+batch_size]
-                subscription_tasks = []
-                
-                for pair in batch:
-                    candle_sub = {
-                        "op": "subscribe",
-                        "args": [{
-                            "channel": f"candle{self.config.TIMEFRAME}",
-                            "instId": pair
-                        }]
-                    }
-                    self.logger.info(f"Subscribing to candlestick channel for {pair}")
-                    subscription_tasks.append(self.ws_public.send(json.dumps(candle_sub)))
-                
-                # Send batch of subscriptions in parallel
-                await asyncio.gather(*subscription_tasks)
-                
-                # Small delay between batches
-                await asyncio.sleep(1)
-                
-            # Wait for subscription responses (with timeout protection)
-            response_count = 0
-            expected_responses = len(trading_pairs)
+            # Create a single subscription message for all pairs
+            subscription_args = []
+            for pair in trading_pairs:
+                subscription_args.append({
+                    "channel": f"candle{self.config.TIMEFRAME}",
+                    "instId": pair
+                })
             
-            # Set a timeout for receiving all responses
+            subscription_message = {
+                "op": "subscribe",
+                "args": subscription_args
+            }
+            
+            # Send single subscription message
+            await self.ws_public.send(json.dumps(subscription_message))
+            
+            # Wait for subscription confirmations with timeout
+            timeout = 30  # 30 seconds total timeout
             start_time = time.time()
-            timeout = 30  # 30 seconds timeout
+            confirmed_pairs = set()
             
-            while response_count < expected_responses and (time.time() - start_time < timeout):
+            while len(confirmed_pairs) < len(trading_pairs):
+                if time.time() - start_time > timeout:
+                    raise Exception("Subscription confirmation timeout")
+                    
                 try:
                     response = await asyncio.wait_for(self.ws_public.recv(), timeout=5)
                     data = json.loads(response)
-                    if 'event' in data and data['event'] == 'subscribe':
-                        response_count += 1
-                        self.logger.debug(f"Subscription response {response_count}/{expected_responses}")
-                
+                    if data.get('event') == 'subscribe' and data.get('arg', {}).get('instId'):
+                        confirmed_pairs.add(data['arg']['instId'])
                 except asyncio.TimeoutError:
-                    self.logger.warning("Timeout waiting for subscription response")
-                    break
-            
-            self.logger.info(f"Completed {response_count}/{expected_responses} subscriptions")
+                    continue
+                
+            self.logger.info(f"Completed {len(confirmed_pairs)}/{len(trading_pairs)} subscriptions")
             
         except Exception as e:
             self.logger.error(f"Subscription error: {str(e)}")
-            self.connected = False
-            await self.reconnect()
+            raise
 
     async def heartbeat(self):
         """Send heartbeat to keep connection alive"""
@@ -286,10 +297,12 @@ class WebSocketManager:
                 # Skip subscription confirmations in normal handler flow
                 if 'event' in data and data['event'] == 'subscribe':
                     self.logger.debug(f"Received subscription confirmation: {data}")
+                    del data  # Help with memory management
                     continue
                 
                 if 'event' in data and data['event'] == 'error':
                     self.logger.error(f"WebSocket error: {data}")
+                    del data  # Help with memory management
                     continue
                 
                 if 'data' in data and 'arg' in data:
@@ -322,6 +335,9 @@ class WebSocketManager:
                         except Exception as e:
                             self.logger.error(f"Error processing candle data for {inst_id}: {str(e)}")
                             continue
+                        
+                # Explicitly clean up large data objects
+                del data
                         
             except (websockets.exceptions.ConnectionClosed,
                     websockets.exceptions.ConnectionClosedError,
@@ -375,6 +391,12 @@ class WebSocketManager:
                     # Check last message time
                     if hasattr(self, 'last_message_time') and time.time() - self.last_message_time > 60:
                         self.logger.warning("No messages received in 60 seconds, reconnecting")
+                        self.connected = False
+                        await self.reconnect()
+                    
+                    # Check connection lifespan - proactively reconnect after the configured lifespan
+                    if self.connection_start_time > 0 and time.time() - self.connection_start_time > self.connection_lifespan:
+                        self.logger.info(f"Connection lifespan of {self.connection_lifespan}s reached, performing scheduled reconnection")
                         self.connected = False
                         await self.reconnect()
             

@@ -5,11 +5,14 @@ import aiohttp
 from utils import Utils  # For API signing
 
 class RiskManager:
-    def __init__(self, config):
+    def __init__(self, config, indicators=None):
         """Initialize RiskManager with configuration"""
         self.config = config
         self.logger = logging.getLogger(__name__)
         self.logger.setLevel(logging.INFO)
+        
+        # Store indicators instance
+        self.indicators = indicators
         
         # Add this flag
         self.should_log_on_next_candle = False
